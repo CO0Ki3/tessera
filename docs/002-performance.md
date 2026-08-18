@@ -1,6 +1,7 @@
 # 002 — Performance: the invariant, what is ruled out, and the plan
 
-Status: **invariant not met** (64% of hand-written; target 80%)
+Status: **invariant met** by the direct backend (117% of hand-written); the MLIR
+path remains at 64% and is no longer the default
 Measurement: `spike/wgsl-baseline/measure.js`
 
 ## 1. Why this is not optional
@@ -18,7 +19,10 @@ keep being checked.
 > **The canonical kernel, generated, must reach at least 80% of the hand-written
 > kernel's throughput, on the same machine in the same session.**
 >
-> Current: **64%** — 7 quanta hand-written vs 11 generated. **Not met.**
+> Current: **met**. Direct backend 6 quanta vs 7 hand-written — at parity, and
+> inside one quantum, so "indistinguishable" is the honest reading rather than
+> "faster". The MLIR backend remains at 11 quanta (64%) and is no longer the
+> default; see §5.
 
 Re-check on every codegen change. `measure.js` makes this a number rather than an
 opinion, so it belongs in CI as soon as there is CI.
@@ -101,24 +105,58 @@ tessera   IR -> MLIR -> SPIR-V -> naga -> WGSL -----------> Tint -> MSL
 If that is what the 1.57× is, then **no amount of improving our MLIR will close
 it**, and the fix is to shorten the chain rather than to optimise within it.
 
-## 5. The decisive experiment — already scoped
+## 5. RESOLVED — the tax is the MLIR chain
 
-The **direct WGSL printer** was planned as week-4 insurance and as the third
-oracle. It is also the A/B that settles §4: same front end, same IR, two
-backends, both through `measure.js`.
+The direct WGSL printer was built to settle §4: same front end, same IR, same
+codegen decisions, no MLIR. It deliberately mirrors the MLIR backend — same tile,
+fragment layout, staging loops, clamp-and-select masking, conditional store,
+rolled k loop — so that only the emission path differs.
 
-| outcome | conclusion | consequence |
-|---|---|---|
-| direct printer ≈ **7 quanta** | the tax is the MLIR chain | the printer stops being insurance and becomes the performance path; MLIR keeps its value for analysis and transformation but stops being the emission path |
-| direct printer ≈ **11 quanta** | the tax is our IR and codegen | MLIR is exonerated; optimise inside it, and §6 becomes the work |
+Measured, both kernels, interleaved:
 
-Either answer is worth having, and it is a far sharper question than the
-WGSL-level guessing that produced three refutations.
+```
+aligned  1024x768x512            min    GFLOP/s
+  hand-written                    7q     1755
+  tessera via MLIR               11q     1117
+  tessera direct                  6q     2048
 
-**Run it after ragged axes land**, not before: ragged changes codegen — masks
-appear in the staging loads and the store — so anything measured first is
-measured on a kernel that is about to change, and anything tuned first gets
-retuned.
+ragged   1000x750x500
+  tessera via MLIR               12q      954
+  tessera direct                  7q     1635      1.71x
+```
+
+**Row 1 of the table above: the tax is the chain.** The direct printer reaches
+the hand-written kernel with the same IR behind it, so the 1.57× was never
+tessera making worse decisions — it was the cost of
+`IR → MLIR → SPIR-V → naga → WGSL`. Both backends are bit-identical to each other
+and to the CPU oracle on both kernels (786432/786432 and 750000/750000), so this
+is a pure emission-path comparison.
+
+### Consequence: the direct backend is now the default
+
+The project's standing rule, from the README: *MLIR is in the stack only to ride
+existing dialects; otherwise it is pure overhead.* We never rode `linalg` — there
+is no `LinalgToSPIRV` upstream — so MLIR has been serving as a convenient textual
+IR with SPIR-V conversions attached. That convenience now has a measured price,
+and it is 1.57×.
+
+`--backend=mlir` opts back in. It stays for three reasons, none of them emission:
+
+- **Second oracle.** Two independent backends agreeing bit-for-bit is a real
+  correctness asset; a future divergence localises in one comparison.
+- **Analysis and transformation.** Nothing in §6 has been attempted yet, and
+  several of those levers are natural in MLIR and awkward by hand.
+- It cost a week-0 spike to establish that the path works at all, and that
+  knowledge does not expire.
+
+### What this does not settle
+
+The suspected mechanism — naga reconstructing `loop{}/continuing{}` with 144 phi
+variables from an unstructured IR, where the direct printer emits WGSL's own
+structured loops — is *consistent* with everything measured but is not itself
+confirmed. Confirming it needs the MSL dump (§7). Both backends currently handle
+exactly one kernel shape, so this is "direct wins at this scale", not a claim
+about arbitrary kernels.
 
 ## 6. Levers held in reserve
 

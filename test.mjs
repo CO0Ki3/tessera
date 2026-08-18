@@ -31,9 +31,10 @@ let failures = 0;
 const ok = (m) => console.log(`  \x1b[32m✓\x1b[0m ${m}`);
 const bad = (m) => { console.log(`  \x1b[31m✗\x1b[0m ${m}`); failures++; };
 
-function build(entry) {
+function build(entry, ...flags) {
   try {
-    return { ok: true, out: execFileSync("npx", ["tsx", "src/cli.ts", "build", entry, "-o", out],
+    return { ok: true, out: execFileSync("npx",
+      ["tsx", "src/cli.ts", "build", entry, "-o", out, ...flags],
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) };
   } catch (e) {
     return { ok: false, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
@@ -42,7 +43,7 @@ function build(entry) {
 
 // ---- 1. the canonical kernel, against the verified reference ---------------
 console.log("\ncanonical kernel");
-const built = build("examples/matmul.kernel.ts");
+const built = build("examples/matmul.kernel.ts", "--backend=mlir");
 if (!built.ok) {
   bad(`examples/matmul.kernel.ts failed to build\n${built.out}`);
 } else {
@@ -103,7 +104,7 @@ for (const [file, rule, why] of NEGATIVES) {
 
 // ---- 2b. the ragged kernel builds, and only it has masks -------------------
 console.log("\nragged axes");
-const rag = build("examples/matmul-ragged.kernel.ts");
+const rag = build("examples/matmul-ragged.kernel.ts", "--backend=mlir");
 if (!rag.ok) {
   bad(`examples/matmul-ragged.kernel.ts failed to build\n${rag.out}`);
 } else {
@@ -143,7 +144,7 @@ if (!rag.ok) {
 // docs/002 §5 meaningful: it must be valid WGSL, and it must make the same
 // masking decisions as the MLIR backend — otherwise the measurement compares
 // two different kernels rather than two emission paths.
-console.log("\ndirect WGSL backend");
+console.log("\ndirect WGSL backend (the default)");
 for (const [entry, label, wantMasks] of [
   ["examples/matmul.kernel.ts", "aligned", false],
   ["examples/matmul-ragged.kernel.ts", "ragged", true],

@@ -3,7 +3,8 @@
 A compiler that lowers kernels written in TypeScript to the GPU by way of MLIR.
 
 ```
-kernel.ts ──▶ tsc typed AST ──▶ MLIR (linalg/vector/scf) ──▶ SPIR-V / WGSL
+kernel.ts ──▶ tsc typed AST ──▶ tessera IR ──▶ WGSL          (default)
+                                          └──▶ MLIR ──▶ SPIR-V ──▶ WGSL   (--backend=mlir)
 ```
 
 ## Why

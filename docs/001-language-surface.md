@@ -1,6 +1,6 @@
 # 001 — Language surface: block-level with named axes
 
-Status: **decided** (surface) / **open** (backend — see §5)
+Status: **decided** (surface) / **decided** (backend: direct WGSL — see §5)
 Date: 2026-08-14
 Verification artifacts: `spike/surface/`
 
@@ -152,7 +152,7 @@ sums, not the result, so cancellation near zero fails a relative test no matter
 how correct the kernel is. This is not academic: the first harness run reported
 912 spurious failures out of 786432, every one of them a near-zero ReLU output.
 
-## 5. The backend question is now OPEN, and leaning away from MLIR
+## 5. The backend question, and how it closed
 
 The README's standing rule is that MLIR is in the stack **only** to ride existing dialects. Research
 found that the dialect we most wanted may not be ridable:
@@ -172,7 +172,18 @@ fragment-legalization pass is **a convenient textual IR with SPIR-V conversions 
 structured-codegen infrastructure the MLIR dependency was justified by. A direct
 tessera-IR → WGSL printer is ~600 lines and reaches the same v0 milestone far sooner.
 
-**RESOLVED, partially and in favour of MLIR.** The spike ran (`spike/mlir-spirv/`,
+**CLOSED: the default backend is the direct WGSL printer.** The week-0 spike
+established that the MLIR path works, and it does — bit-exactly. But the A/B in
+[`002-performance.md`](002-performance.md) §5 measured what it costs: the direct
+printer, driven by the same front end and the same IR, reaches the hand-written
+kernel (6 quanta vs 7) where the MLIR path lands at 11. On the ragged kernel the
+gap is 1.71×. The standing rule — MLIR earns its place by riding existing
+dialects, and we never rode `linalg` — resolves the same way the measurement
+does. `--backend=mlir` remains as the second oracle and the experiment path.
+
+The rest of this section is the week-0 record that got us there, and stands.
+
+**Spike result, for the record.** The spike ran (`spike/mlir-spirv/`,
 reproduce with `./run-l0.sh`) and the highest-variance item did not materialise:
 MLIR-emitted SPIR-V — carrying workgroup memory, a barrier and binding
 decorations — passes `spirv-val` and is accepted by naga, producing clean WGSL of

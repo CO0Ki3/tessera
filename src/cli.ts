@@ -68,7 +68,7 @@ function main(): void {
   const entry = args.find((x, i) => !x.startsWith("-") && i !== oIdx + 1);
 
   if (!entry) {
-    console.error("usage: tessera build <kernel.ts> [-o outdir]");
+    console.error("usage: tessera build <kernel.ts> [-o outdir] [--backend=mlir]");
     process.exit(2);
   }
   for (const t of [MLIR_OPT, MLIR_TRANSLATE]) {
@@ -91,7 +91,10 @@ function main(): void {
 
   // ---- direct WGSL backend ------------------------------------------------
   // Same IR, no MLIR. See docs/002 §5 and src/emit-wgsl.ts.
-  if (args.includes("--backend=wgsl")) {
+  // DEFAULT since the A/B in docs/002 §5: the direct printer reaches the
+  // hand-written kernel while the MLIR path costs 1.57x. --backend=mlir opts
+  // back in; it remains the second oracle and the experiment path.
+  if (!args.includes("--backend=mlir")) {
     console.log(`\n── emit (direct WGSL, no MLIR) ────────────────────`);
     const wgslDirect = emitWGSL(ir);
     writeFileSync(at(".wgsl"), wgslDirect);
