@@ -43,6 +43,24 @@ Four requirements, all of them load-bearing:
 Report the spread alongside. A wide distribution should be visible, not averaged
 into a confident-looking number.
 
+**The method is now validated by reproduction**, which is the property the first
+one lacked entirely. Two independent sessions, six kernels, quoted as min/med/max
+quanta:
+
+```
+                                    session 1        session 2
+hand-written                        7 /  7 /  8      7 /  7 /  8
+tessera                            11 / 11 / 12     11 / 11 / 12
+probe A1  hand, read_write          7 /  7 /  7      7 /  7 /  8
+probe A2  tessera, read            11 / 11 / 12     11 / 11 / 12
+probe B   tessera, --no-opt        11 / 11 / 12     11 / 11 / 12
+probe C   tessera, k unrolled      15 / 15 / 16     15 / 15 / 16
+```
+
+Identical to the quantum but for one sample's maximum, and every derived ratio
+reproduced exactly (1.57× / 1.00× / 0.73× / 1.00× / 1.00×). Compare the method it
+replaced, which put the *same shader* at 45q and 22q on different days.
+
 **Chrome quantizes `timestamp-query` to 2^16 ns = 65.536 µs.** Measured, not
 assumed: every sample the harness has ever produced is an exact multiple. Two
 kernels are only distinguishable if they are several quanta apart, which is why
