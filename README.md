@@ -95,7 +95,12 @@ targeting WGSL" is occupied; what is unrefuted is the **TypeScript surface**.
 
 **TypeGPU** is the typed-resource layer for WebGPU in TypeScript and is better at that job
 than anything here. If you want typed buffers and a shader body in TS, use it — its TS→WGSL
-path is a faithful transliteration, so the masks stay yours to write.
+path is a faithful transliteration, so the masks stay yours to write. tessera does not
+compete with it; it **runs on it**. The two fit together at exactly one seam: TypeGPU owns
+buffers, bind group layouts, bind groups and readback, while pipeline creation stays raw,
+because `TgpuComputePipeline`'s descriptor is `{ compute: TgpuComputeFn }` and a
+`TgpuComputeFn` cannot be built from emitted WGSL. See
+[`docs/005-runtime.md`](docs/005-runtime.md).
 
 Full accounting, including what three research passes could not look at and why, in
 [`docs/003-prior-art.md`](docs/003-prior-art.md).
@@ -114,7 +119,8 @@ Full accounting, including what three research passes could not look at and why,
 | `examples/matmul-ragged.kernel.ts` | 1000x750x500, no axis dividing its block, 750000/750000 bit-exact |
 | `examples/softmax.kernel.ts` | a second kernel family, 1024x750 with a ragged reduction axis, every row normalised and within 6 ULP |
 | backends | direct WGSL (default) and MLIR (`--backend=mlir`), bit-identical to each other |
-| `npm test` | MLIR byte-identity against a verified reference, 7 rejected negatives, mask placement, direct-backend validity |
+| `spike/wgsl-baseline/typegpu-runner.js` | the same kernels with TypeGPU owning the resources, sharing the raw runner's timed path verbatim |
+| `npm test` | MLIR byte-identity against a verified reference, 7 rejected negatives, mask placement, direct-backend validity, manifest↔WGSL↔TypeGPU layout agreement |
 
 The second kernel family was written to answer one question, with the criteria fixed in
 advance: does a new schedule reuse the derivation, or does the emitter grow a code path?
@@ -132,3 +138,4 @@ See [`docs/004-falsification.md`](docs/004-falsification.md).
 - [`docs/002-performance.md`](docs/002-performance.md) — the invariant, how to measure, three refuted hypotheses
 - [`docs/003-prior-art.md`](docs/003-prior-art.md) — what is not ours, and what is
 - [`docs/004-falsification.md`](docs/004-falsification.md) — compiler or template, criteria fixed before the experiment
+- [`docs/005-runtime.md`](docs/005-runtime.md) — the host layer, and what TypeGPU structurally cannot absorb

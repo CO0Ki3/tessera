@@ -52,6 +52,17 @@
 <script type="module">
 import { initDevice, compile } from "./run.js";
 import { createRunner, measureInterleaved, QUANTUM_NS } from "./measure.js";
+
+// TypeGPU is loaded dynamically and its absence is not an error. tessera should
+// not hard-require a pre-1.0 runtime to run its own kernels, so the adapter is a
+// peer of the raw runner rather than a replacement, and this page still measures
+// everything else if `npm run vendor` was never run.
+let createTypeGPURunner = null;
+try {
+  ({ createTypeGPURunner } = await import("./typegpu-runner.js"));
+} catch (e) {
+  console.warn("typegpu adapter unavailable:", e.message);
+}
 import {
   DIMS, randomF32, matmulReluF32, allClose, summarize,
   dotAbsSum, withinErrorBound, bitExactCount,
@@ -125,6 +136,14 @@ async function main() {
     // tax is the translation chain; if it also lands at 11 the tax is ours.
     { key: "direct", file: "./matmul-direct.wgsl", manifest: "./matmul-direct.json",
       label: "tessera: TS \u2192 WGSL (no MLIR)" },
+    // The same WGSL and the same dispatch as `direct`, with TypeGPU owning the
+    // buffers, the bind group layout, the bind group and the readback instead of
+    // measure.js hand-rolling them. Both share createDispatcher, so the timed
+    // path is identical code and this measures the resource layer alone: it
+    // should land on `direct` exactly, and its output should be bit-identical.
+    // If either fails, the adapter is wiring something differently than it says.
+    { key: "typegpu", file: "./matmul-direct.wgsl", manifest: "./matmul-direct.json",
+      runtime: "typegpu", label: "tessera direct, TypeGPU resources" },
     // Two-sided probe of the storage access mode (node make-probes.mjs).
     // A1 makes the fast kernel worse; A2 makes the slow kernel better. If the
     // gap is the access mode, they move toward each other and meet.
@@ -189,11 +208,29 @@ async function main() {
     }
 
     const t0 = performance.now();
-    const { pipeline, messages } = await compile(ctx.device, source, entry, v.key);
-    for (const m of messages) write(`<span class="warn">${m.type} ${m.line}:${m.col}</span> ${m.message}`);
+    let r;
+    if (v.runtime === "typegpu") {
+      if (!createTypeGPURunner) {
+        write(`  ${v.label.padEnd(34)} <span class="warn">skipped</span> (run \`npm run vendor\`)`);
+        continue;
+      }
+      // The adapter compiles and allocates in one call, because with TypeGPU the
+      // bind group layout comes from the manifest rather than from the pipeline
+      // (`getBindGroupLayout(0)`) — that inversion is the whole point of it.
+      try {
+        r = await createTypeGPURunner(ctx, source, man, [a, b], v.key);
+      } catch (e) {
+        write(`  ${v.label.padEnd(34)} <span class="bad">adapter failed</span> ${e.message}`);
+        continue;
+      }
+    } else {
+      const { pipeline, messages } = await compile(ctx.device, source, entry, v.key);
+      for (const m of messages) write(`<span class="warn">${m.type} ${m.line}:${m.col}</span> ${m.message}`);
+      r = createRunner(ctx, pipeline, [a, b], man, v.key);
+    }
     write(`  ${v.label.padEnd(34)} ${String(source.split("\n").length).padStart(4)} lines   ` +
           `pipeline ${f(performance.now() - t0, 1).padStart(7)} ms`);
-    runners.push({ v, r: createRunner(ctx, pipeline, [a, b], man, v.key) });
+    runners.push({ v, r });
   }
   if (!runners.length) throw new Error("nothing compiled");
   write("");
@@ -255,6 +292,17 @@ async function main() {
     }
     write("");
   }
+  if (q("typegpu") && q("direct")) {
+    const dq = q("typegpu") - q("direct");
+    write(`TypeGPU resource layer costs   ${f(q("typegpu") / q("direct"), 2)}x   ` +
+          `<span class="dim">(${q("direct")}q \u2192 ${q("typegpu")}q, ${dq >= 0 ? "+" : ""}${dq}q)</span>`);
+    write(Math.abs(dq) <= 1
+      ? `  <span class="ok">free</span> \u2014 same WGSL, same dispatch, same timed code; the ` +
+        `resources are just allocated by a typed layer instead of by hand.`
+      : `  <span class="warn">not free</span> \u2014 investigate before adopting it; nothing in ` +
+        `the timed path differs, so this would be allocation or binding.`);
+    write("");
+  }
   if (q("mlirNoOpt") && q("mlir")) {
     const d = q("mlirNoOpt") - q("mlir");
     write(`canonicalize+cse+licm bought   ${f(q("mlirNoOpt") / q("mlir"), 2)}x   ` +
@@ -308,6 +356,12 @@ async function main() {
     const same = bitExactCount(results.direct, results.hand);
     write(`direct WGSL vs hand-written   bit-exact ${same} / ${results.hand.length}` +
           (same === results.hand.length
+            ? `  <span class="ok">IDENTICAL</span>` : `  <span class="bad">DIVERGENT</span>`));
+  }
+  if (results.typegpu && results.direct) {
+    const same = bitExactCount(results.typegpu, results.direct);
+    write(`TypeGPU resources vs raw      bit-exact ${same} / ${results.direct.length}` +
+          (same === results.direct.length
             ? `  <span class="ok">IDENTICAL</span>` : `  <span class="bad">DIVERGENT</span>`));
   }
   for (const k of ["handRW", "mlirRO", "mlirNoOpt", "mlirUnroll", "roundtrip"]) {

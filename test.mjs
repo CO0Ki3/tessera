@@ -254,6 +254,22 @@ console.log("\nharness artifacts");
   }
 }
 
+// ---- 3. the TypeGPU adapter's derivation ----------------------------------
+// The adapter builds its bind group layout from the manifest and its pipeline
+// from the WGSL, and WebGPU validates against the layout — so a disagreement
+// between the two binds the wrong buffers and still runs. Checkable on the CPU,
+// so checked here. Skips itself if typegpu was never vendored.
+console.log("\ntypegpu adapter");
+try {
+  const out = execFileSync("node", ["spike/wgsl-baseline/check-typegpu-layout.mjs"], { stdio: "pipe" })
+    .toString().trim();
+  const last = out.split("\n").filter(Boolean).pop() ?? "";
+  if (/not vendored|nothing built/.test(out)) console.log(`  - ${last.trim()}`);
+  else ok(last.trim());
+} catch (e) {
+  bad(`manifest and emitted WGSL disagree:\n${e.stdout?.toString() ?? e.message}`);
+}
+
 // ---- 3. our own source ----------------------------------------------------
 console.log("\ncompiler source");
 try {

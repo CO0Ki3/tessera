@@ -10,13 +10,17 @@
   "scripts": {
     "build": "tsx src/cli.ts",
     "check": "tsc --noEmit -p tsconfig.json",
-    "demo": "npm run build:artifacts && cp build/mlir/matmul_relu_f32.wgsl spike/wgsl-baseline/matmul-mlir.wgsl && cp build/mlir/matmul_relu_f32.json spike/wgsl-baseline/matmul-mlir.json && cp build/direct/matmul_relu_f32.wgsl spike/wgsl-baseline/matmul-direct.wgsl && cp build/direct/matmul_relu_f32.json spike/wgsl-baseline/matmul-direct.json && cp build/mlir/matmul_relu_ragged.wgsl spike/wgsl-baseline/matmul-ragged.wgsl && cp build/mlir/matmul_relu_ragged.json spike/wgsl-baseline/matmul-ragged.json && cp build/direct/matmul_relu_ragged.wgsl spike/wgsl-baseline/matmul-ragged-direct.wgsl && cp build/direct/matmul_relu_ragged.json spike/wgsl-baseline/matmul-ragged-direct.json && cp build/direct/softmax_f32.wgsl spike/wgsl-baseline/softmax.wgsl && cp build/direct/softmax_f32.json spike/wgsl-baseline/softmax.json && cp build/direct/layernorm_f32.wgsl spike/wgsl-baseline/layernorm.wgsl && cp build/direct/layernorm_f32.json spike/wgsl-baseline/layernorm.json && node spike/wgsl-baseline/make-probes.mjs && echo '-> artifacts and probes rebuilt; open http://localhost:8080/'",
+    "demo": "npm run vendor && npm run build:artifacts && cp build/mlir/matmul_relu_f32.wgsl spike/wgsl-baseline/matmul-mlir.wgsl && cp build/mlir/matmul_relu_f32.json spike/wgsl-baseline/matmul-mlir.json && cp build/direct/matmul_relu_f32.wgsl spike/wgsl-baseline/matmul-direct.wgsl && cp build/direct/matmul_relu_f32.json spike/wgsl-baseline/matmul-direct.json && cp build/mlir/matmul_relu_ragged.wgsl spike/wgsl-baseline/matmul-ragged.wgsl && cp build/mlir/matmul_relu_ragged.json spike/wgsl-baseline/matmul-ragged.json && cp build/direct/matmul_relu_ragged.wgsl spike/wgsl-baseline/matmul-ragged-direct.wgsl && cp build/direct/matmul_relu_ragged.json spike/wgsl-baseline/matmul-ragged-direct.json && cp build/direct/softmax_f32.wgsl spike/wgsl-baseline/softmax.wgsl && cp build/direct/softmax_f32.json spike/wgsl-baseline/softmax.json && cp build/direct/layernorm_f32.wgsl spike/wgsl-baseline/layernorm.wgsl && cp build/direct/layernorm_f32.json spike/wgsl-baseline/layernorm.json && node spike/wgsl-baseline/make-probes.mjs && node spike/wgsl-baseline/check-typegpu-layout.mjs && echo '-> artifacts and probes rebuilt; open http://localhost:8080/'",
     "test": "node test.mjs",
-    "build:artifacts": "npx tsx src/cli.ts build examples/matmul.kernel.ts -o build/direct && npx tsx src/cli.ts build examples/matmul.kernel.ts -o build/mlir --backend=mlir && npx tsx src/cli.ts build examples/matmul-ragged.kernel.ts -o build/direct && npx tsx src/cli.ts build examples/matmul-ragged.kernel.ts -o build/mlir --backend=mlir && npx tsx src/cli.ts build examples/softmax.kernel.ts -o build/direct && npx tsx src/cli.ts build examples/layernorm.kernel.ts -o build/direct"
+    "build:artifacts": "npx tsx src/cli.ts build examples/matmul.kernel.ts -o build/direct && npx tsx src/cli.ts build examples/matmul.kernel.ts -o build/mlir --backend=mlir && npx tsx src/cli.ts build examples/matmul-ragged.kernel.ts -o build/direct && npx tsx src/cli.ts build examples/matmul-ragged.kernel.ts -o build/mlir --backend=mlir && npx tsx src/cli.ts build examples/softmax.kernel.ts -o build/direct && npx tsx src/cli.ts build examples/layernorm.kernel.ts -o build/direct",
+    "vendor": "rm -rf spike/wgsl-baseline/vendor/typegpu && mkdir -p spike/wgsl-baseline/vendor && cp -R node_modules/typegpu spike/wgsl-baseline/vendor/typegpu && echo '-> typegpu vendored (its ESM is fully relative, so it serves as-is)'"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
     "tsx": "^4.19.2",
     "typescript": "~6.0.3"
+  },
+  "dependencies": {
+    "typegpu": "0.12.0"
   }
 }

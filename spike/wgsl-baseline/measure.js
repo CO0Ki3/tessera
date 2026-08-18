@@ -30,60 +30,21 @@
 export const QUANTUM_NS = 65536;
 
 /**
- * Allocate everything one kernel needs, once, so the timed loop does no
- * allocation and no readback. Buffers are shared across repetitions on purpose:
- * we are timing the kernel, not the allocator.
- */
-/**
- * `dispatch` MUST come from the compiler's manifest, not be recomputed here.
+ * The timed dispatch, factored out so that it can be shared verbatim.
  *
- * This function previously derived it as [N/64, M/64, 1]. That is neither
- * integer division nor a ceiling, so for 750x1000 it asked for 11.71875 x 15.625
- * workgroups and the last block in each dimension was never dispatched — every
- * tail element stayed zero, and the ragged kernel looked like it had a mask bug.
- * The masks were correct; the host ignored a manifest that said [12, 16, 1] and
- * recomputed it wrongly. Same mistake as hardcoding the entry point, twice over.
- *
- * The rule: anything the compiler already decided is read, never re-derived.
+ * There are two runners in this harness now: this file allocates buffers and
+ * bind groups by hand against the raw WebGPU API, and typegpu-runner.js gets
+ * the same resources from TypeGPU. The only reason to keep both is to compare
+ * them, and that comparison is worth nothing unless the timed path is literally
+ * the same code. So everything that touches a query set lives here once, and a
+ * runner supplies only the two things it genuinely owns differently: a pipeline
+ * and a bind group.
  */
-export function createRunner(ctx, pipeline, inputs, manifest, label) {
+export function createDispatcher(ctx, { pipeline, bindGroup, dispatch, label }) {
   const { device, hasTimestamps } = ctx;
-  const { dispatch, bindings } = manifest;
   if (!Array.isArray(dispatch) || dispatch.length !== 3 || !dispatch.every(Number.isInteger)) {
     throw new Error(`${label}: manifest.dispatch must be three integers, got ${JSON.stringify(dispatch)}`);
   }
-
-  // One buffer per binding, sized and ordered by the manifest. Nothing here
-  // knows how many operands a schedule has: matmul declares three bindings and
-  // softmax two, and this reads whichever the compiler wrote down.
-  const bufs = bindings.map((bd) => device.createBuffer({
-    size: bd.elements * 4,
-    usage: GPUBufferUsage.STORAGE
-      | (bd.mode === "read" ? GPUBufferUsage.COPY_DST : GPUBufferUsage.COPY_SRC),
-    label: `${label}:${bd.name}`,
-  }));
-
-  const reads = bindings.map((bd, i) => [bd, i]).filter(([bd]) => bd.mode === "read");
-  reads.forEach(([bd, i], k) => {
-    const src = inputs[k];
-    if (!src || src.length !== bd.elements) {
-      throw new Error(`${label}: input ${k} for binding "${bd.name}" should have ` +
-                      `${bd.elements} elements, got ${src ? src.length : "nothing"}`);
-    }
-    device.queue.writeBuffer(bufs[i], 0, src);
-  });
-
-  const outIdx = bindings.findIndex((bd) => bd.mode === "write");
-  if (outIdx < 0) throw new Error(`${label}: no output binding in the manifest`);
-  const outBytes = bindings[outIdx].elements * 4;
-  const readback = device.createBuffer({
-    size: outBytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, label: `${label}:rb`,
-  });
-
-  const bindGroup = device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(0),
-    entries: bindings.map((bd, i) => ({ binding: i, resource: { buffer: bufs[i] } })),
-  });
 
   let querySet = null, queryResolve = null, queryRead = null;
   if (hasTimestamps) {
@@ -121,6 +82,70 @@ export function createRunner(ctx, pipeline, inputs, manifest, label) {
     return Number(ts[1] - ts[0]);
   }
 
+  function destroy() {
+    for (const b of [queryResolve, queryRead]) b?.destroy();
+    querySet?.destroy();
+  }
+
+  return { once, destroy };
+}
+
+/**
+ * Allocate everything one kernel needs, once, so the timed loop does no
+ * allocation and no readback. Buffers are shared across repetitions on purpose:
+ * we are timing the kernel, not the allocator.
+ */
+/**
+ * `dispatch` MUST come from the compiler's manifest, not be recomputed here.
+ *
+ * This function previously derived it as [N/64, M/64, 1]. That is neither
+ * integer division nor a ceiling, so for 750x1000 it asked for 11.71875 x 15.625
+ * workgroups and the last block in each dimension was never dispatched — every
+ * tail element stayed zero, and the ragged kernel looked like it had a mask bug.
+ * The masks were correct; the host ignored a manifest that said [12, 16, 1] and
+ * recomputed it wrongly. Same mistake as hardcoding the entry point, twice over.
+ *
+ * The rule: anything the compiler already decided is read, never re-derived.
+ */
+export function createRunner(ctx, pipeline, inputs, manifest, label) {
+  const { device, hasTimestamps } = ctx;
+  const { dispatch, bindings } = manifest;
+
+  // One buffer per binding, sized and ordered by the manifest. Nothing here
+  // knows how many operands a schedule has: matmul declares three bindings and
+  // softmax two, and this reads whichever the compiler wrote down.
+  const bufs = bindings.map((bd) => device.createBuffer({
+    size: bd.elements * 4,
+    usage: GPUBufferUsage.STORAGE
+      | (bd.mode === "read" ? GPUBufferUsage.COPY_DST : GPUBufferUsage.COPY_SRC),
+    label: `${label}:${bd.name}`,
+  }));
+
+  const reads = bindings.map((bd, i) => [bd, i]).filter(([bd]) => bd.mode === "read");
+  reads.forEach(([bd, i], k) => {
+    const src = inputs[k];
+    if (!src || src.length !== bd.elements) {
+      throw new Error(`${label}: input ${k} for binding "${bd.name}" should have ` +
+                      `${bd.elements} elements, got ${src ? src.length : "nothing"}`);
+    }
+    device.queue.writeBuffer(bufs[i], 0, src);
+  });
+
+  const outIdx = bindings.findIndex((bd) => bd.mode === "write");
+  if (outIdx < 0) throw new Error(`${label}: no output binding in the manifest`);
+  const outBytes = bindings[outIdx].elements * 4;
+  const readback = device.createBuffer({
+    size: outBytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, label: `${label}:rb`,
+  });
+
+  const bindGroup = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: bindings.map((bd, i) => ({ binding: i, resource: { buffer: bufs[i] } })),
+  });
+
+  const { once, destroy: destroyTimer } =
+    createDispatcher(ctx, { pipeline, bindGroup, dispatch, label });
+
   /** Read the output once, for the correctness check. Not part of timing. */
   async function result() {
     const encoder = device.createCommandEncoder();
@@ -133,8 +158,8 @@ export function createRunner(ctx, pipeline, inputs, manifest, label) {
   }
 
   function destroy() {
-    for (const b of [...bufs, readback, queryResolve, queryRead]) b?.destroy();
-    querySet?.destroy();
+    for (const b of [...bufs, readback]) b?.destroy();
+    destroyTimer();
   }
 
   return { once, result, destroy, dispatch, label };
