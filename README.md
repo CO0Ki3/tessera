@@ -89,17 +89,23 @@ research did not look at.
 |---|---|
 | `examples/matmul.kernel.ts` | 1024x768x512, bit-identical to a hand-written WGSL kernel, at parity on throughput |
 | `examples/matmul-ragged.kernel.ts` | 1000x750x500, no axis dividing its block, 750000/750000 bit-exact |
+| `examples/softmax.kernel.ts` | a second kernel family, 1024x750 with a ragged reduction axis, every row normalised and within 6 ULP |
 | backends | direct WGSL (default) and MLIR (`--backend=mlir`), bit-identical to each other |
 | `npm test` | MLIR byte-identity against a verified reference, 7 rejected negatives, mask placement, direct-backend validity |
 
-Open: exactly one kernel family. Whether the types *derive* a second one — softmax or
-attention over a ragged axis — or whether the emitter grows a code path is the question
-that decides whether this is a compiler or a well-typed template collection. See
-[`docs/003-prior-art.md`](docs/003-prior-art.md) §5 and
-[`docs/002-performance.md`](docs/002-performance.md).
+The second kernel family was written to answer one question, with the criteria fixed in
+advance: does a new schedule reuse the derivation, or does the emitter grow a code path?
+Measured — the 73-line softmax schedule contains **no masking and no index arithmetic at
+all**, 2 `emitLoad` and 1 `emitStore` calls, and its 64 bound checks come from the same
+access layer the matmul uses. What is *not* shared is the schedule vocabulary: tessera
+recognises a fixed set of body shapes and refuses anything else rather than approximating
+it, so a third family needs a third recogniser. The honest summary is that the derivation
+is general and the vocabulary is finite — roughly where Triton sits.
+See [`docs/004-falsification.md`](docs/004-falsification.md).
 
 ## Documents
 
 - [`docs/001-language-surface.md`](docs/001-language-surface.md) — the surface, why block-level, the backend decision
 - [`docs/002-performance.md`](docs/002-performance.md) — the invariant, how to measure, three refuted hypotheses
 - [`docs/003-prior-art.md`](docs/003-prior-art.md) — what is not ours, and what is
+- [`docs/004-falsification.md`](docs/004-falsification.md) — compiler or template, criteria fixed before the experiment

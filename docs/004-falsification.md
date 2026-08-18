@@ -1,6 +1,6 @@
 # 004 — The falsification test: is this a compiler or a template?
 
-Status: **run.** Verdict by the rule fixed in §3: **compiler** — with one caveat the rule did not ask about, recorded in R7.
+Status: **complete, and verified on hardware.** Verdict by the rule fixed in §3: **compiler** — with one caveat the rule did not ask about, recorded in R7.
 
 Written *before* attempting the second kernel, on purpose. The failure mode this
 guards against is reading whatever happens as a success.
@@ -290,10 +290,41 @@ things the language knows how to lower is finite and grows deliberately. The dif
 that matters is which half had to be rewritten for kernel number two, and the answer
 measured here is: not the derivation.
 
-## R8. Not yet verified
+## R8. Verified on hardware
 
-The softmax WGSL validates but **has not been run**. Emitting plausible code is not
-correctness, and this project's own history says so — the ragged matmul looked wrong for
-a whole round before the bug turned out to be in the harness. A CPU oracle and a bit-exact
-differential at 1024x750, with the 46-column tail, is required before any of the above is
-worth repeating aloud.
+Apple/metal-3, 1024 x 750 with the ragged 46-column tail:
+
+```
+row sums      [0.999999700, 1.000000246]        every row normalised
+bit-exact     317754 / 768000   (41.37%)
+max ULP       6      at [59][242]
+maxRelDiff    4.742e-7
+```
+
+Two checks, deliberately independent.
+
+**The row sums need no reference at all.** A correct softmax normalises each row, so a
+wrong tail mask changes that row's denominator and shows up here regardless of what the
+oracle does. It matters that this is separate: the oracle and the kernel could in
+principle share a misunderstanding, and this check cannot.
+
+**Against the CPU oracle, 41% bit-exact is the expected number, not a poor one.** WGSL
+does not require `exp` to be correctly rounded, so the GPU's `exp` and JS's `Math.exp` may
+differ in the last place; that difference then propagates through the sum and the divide,
+and most outputs end up one or two ULP apart. The meaningful figure is the maximum, and
+6 ULP is comfortably inside what a permitted `exp` explains. A mask error would not be
+subtle at this resolution — it would move a whole row's denominator and both checks would
+fail by O(1).
+
+This is a real difference from the matmul, where bit-exactness *was* the right bar because
+`+`, `*` and fma are all correctly rounded. Which bar applies is a property of the
+operations in the kernel, not a matter of how strict one feels like being.
+
+### One more validator gap, found the hard way
+
+The first hardware run failed to compile: `-3.4028235e38` looks like the f32 minimum and
+is routinely written as one, but it exceeds f32::MAX (3.4028234663852886e38) and does not
+round-trip. **naga validated all 57 occurrences and reported success**; only Tint rejected
+it. A validator that accepts what the target rejects converts a build-time error into a
+runtime one, so the check moved into the compiler (`assertF32Literals`) and into the suite.
+Written up for reporting in `spike/upstream/naga-f32-literal-range.md`.
