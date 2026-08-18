@@ -57,68 +57,48 @@ oracle — 786432/786432 and 750000/750000 — with the ragged tails included.
 
 ## Related work
 
-The type-driven derivation is not new, and this project does not claim it. What follows
-was checked by reading the sources, not by recalling them.
+None of the derivation is new, and this project does not claim it. What follows was checked
+by reading sources; where a claim rests on documentation rather than source, it says so.
 
-**Mojo's `LayoutTensor`** ([`max/kernels/src/layout/layout_tensor.mojo`](https://github.com/modular/modular/blob/main/max/kernels/src/layout/layout_tensor.mojo),
-8717 lines, read 2026-08-18) already derives maskedness from compile-time layout:
+**The derivation half is claimed several times over.** Mojo's `LayoutTensor` derives
+maskedness from a comptime layout parameter (`_tile_is_masked`, L185; threaded into the
+type at L3244). Halide's `TailStrategy` and TVM/TensorIR have derived tiling, staging and
+tail predication for a decade, from schedule values. CUTLASS/CuTe derives thread-value
+partitioning from static shapes. **Dex** (2021) made index sets types — so a transposed
+axis being a type error is not new either — and its `tile()` / `CodaIx` derive both the
+tile count and the ragged remainder from those types.
 
-```mojo
-struct LayoutTensor[..., layout: Layout, ..., masked: Bool = False, ...]
+**What is not claimed is the enforcement.** Padding a masked reduction with the wrong
+identity is a bug that appears only at the ragged edge and only for some data — zero-padding
+a max is correct until a tail row happens to be entirely negative. Several systems ask the
+author for that value:
 
-def _tile_is_masked[layout: Layout, *tile_sizes: Int]() -> Bool:   # L185
-    comptime for axis in range(layout.rank()):
-        comptime if product(layout.shape[axis]) % tile_sizes[axis] != 0:
-            return True
+| | asks | checks it against the operator |
+|---|---|---|
+| Triton | `tl.load(p, mask=m, other=v)` — and `other` is **optional**, undefined if omitted | no |
+| NVIDIA cuTile | `padding_mode=zero_pad` | no |
+| CubeCL / cubek | `read_masked(mask, list, index, value)`; `read_checked` defaults to zero | no |
+| Futhark, Julia, Finch.jl, HeteroCL | `ne` / `init` / `Element(0.0)` / `hcl.reducer(init, …)` | no |
+| tessera | `.pad(negInf)` | **yes** — `rowMax` takes `"exact" \| "negInf"` |
 
-masked = Self.masked or _tile_is_masked[Self.layout, *tile_sizes]()   # L3244
-```
+cubek documents the failure mode nearly verbatim — an identity is what *"a masked read past
+an operand's valid extent must return instead of a shared zero, since zero is Sum's identity
+but biases Max toward it"* — and enforces it with a hand-maintained `match` at two call
+sites. That is the best argument that this is worth checking: the bug class is somebody
+else's scar, not a hypothetical.
 
-So "the tile size is a compile-time parameter, raggedness is derived from it, and the
-result becomes part of the type" is shipped, in production, and predates this. Its
-handling is also more careful than a summary suggests: the primary mechanism is
-**clipping the runtime shape** so out-of-range elements are never read at all —
+**Two honest scopings.** Mojo and Dex never need an identity, because neither pads: Mojo
+clips the runtime shape, Dex gives the tail a smaller dependent type. So this differentiator
+holds among padding-based designs — a populous category — and not universally. And
+CubeCL's `cubecl-wgpu` backend emits WGSL, so "compile-time-driven GPU kernel compiler
+targeting WGSL" is occupied; what is unrefuted is the **TypeScript surface**.
 
-```mojo
-var shape_i = max(min(tile_sizes[i], cur_dim), 0)   # L3347
-```
+**TypeGPU** is the typed-resource layer for WebGPU in TypeScript and is better at that job
+than anything here. If you want typed buffers and a shader body in TS, use it — its TS→WGSL
+path is a faithful transliteration, so the masks stay yours to write.
 
-— which needs no identity element, because nothing out of range is touched. tessera made
-the other choice: read out of range and substitute a named identity, so the guard is
-branchless. Both are defensible; neither is a fix for the other.
-
-Two things are absent from that file, and they are what tessera adds:
-
-- **Axis identity.** `Layout` is a positional `IntTuple` in the CuTe lineage — the code
-  indexes `layout.shape[axis]` over `range(layout.rank())`. Grepping 8717 lines for a
-  name-based axis access returns **zero** against 30 positional ones. A transposed
-  coordinate is legal there, and a compile error here.
-- **The identity element as an obligation.** `masked` is one `Bool` for a whole tensor,
-  not a per-axis fact, and the single data fill in the file is hardcoded —
-  `fill=Scalar[Self.dtype](0.0)` (L5708) — with no parameter to change it. Nothing asks
-  the author what an out-of-range lane should read. In tessera the operator demands it:
-  `rowMax` takes `"exact" | "negInf"`, so `.pad(zero)` into a max does not compile.
-
-Also relevant, and also not ours:
-
-- **CUTLASS 3.x / CuTe** carries shapes and strides as static template types and derives
-  thread-value partitioning from them — but its own `0y_predication.md` walks the author
-  through hand-building a predicate tensor.
-- **Dex** (2021) made index sets types, so two axes of equal size are still distinct
-  types. That is the axis-identity half, years earlier, in a non-GPU array language.
-- **Halide** (`TailStrategy`) and **TVM/TensorIR** have derived tiling, staging and tail
-  predication for about a decade — from schedule values rather than from types.
-- **`tfjs-backend-webgpu`** already generates WGSL with out-of-range guards; the narrow
-  claim is not "generated guards in TS" but "guards driven by shapes the user declared as
-  types".
-- **TypeGPU** is the typed-resource layer for WebGPU in TypeScript and is better at that
-  job than anything here. If you want typed buffers and a shader body in TS, use it — its
-  TS→WGSL path is a faithful transliteration, so the masks stay yours to write.
-
-What tessera puts together: **axis identity and the ragged identity element as obligations
-inside the same type that drives the derivation**, on a TypeScript/WGSL substrate. See
-[`docs/003-prior-art.md`](docs/003-prior-art.md), including what that research did not look
-at — no academic search was run, and CubeCL was never reached.
+Full accounting, including what three research passes could not look at and why, in
+[`docs/003-prior-art.md`](docs/003-prior-art.md).
 
 ## Scope principles
 
