@@ -1,92 +1,62 @@
-# TypeGPU: published ESM reads `process.env` at module top level, so it cannot be loaded by a browser without a bundler
+# TypeGPU: published ESM is not loadable by a browser (`process.env` at module top level)
 
-- **Project**: [software-mansion/TypeGPU](https://github.com/software-mansion/TypeGPU)
-- **Version**: 0.12.0
-- **File**: `shared/env.js` (published, in the npm tarball)
-- **Status**: not yet filed
-- **Impact on tessera**: worked around in `spike/wgsl-baseline/vendor.mjs`; guarded by `npm test`
+- **Repo**: [software-mansion/TypeGPU](https://github.com/software-mansion/TypeGPU)
+- **Affects**: 0.12.0 (also the latest published version, checked 0.12.0)
+- **Duplicate check**: no matching issue — `is:issue process.env` returns no results
+- **Status**: ready to file, not yet filed
+- **In tessera**: worked around in `spike/wgsl-baseline/vendor.mjs`, guarded by `npm test`
 
-## Scope
+Everything between the markers below is the issue body, verbatim. The section
+after it is ours and does not belong upstream.
 
-This is only about `process.env`. Shipping bare specifiers for real dependencies
-is normal and correct, and resolving them is the consumer's job (import map or
-bundler). The `process.env` read is different: it fails **even with** a correct
-import map, because there is no `process` to read.
+<!-- ─────────────────── BEGIN ISSUE BODY ─────────────────── -->
 
-## What happens
+### Summary
 
-`package.json` advertises the package as plain ESM:
-
-```json
-"exports": { ".": "./index.js", "./data": "./data/index.js", ... }
-```
-
-There is no `browser` field and no bundled build. Loading `./index.js` in a browser
-with a plain `<script type="module">` — no bundler, no import map beyond a relative
-path — fails immediately:
-
-```
-Uncaught ReferenceError: process is not defined
-    at shared/env.js:9
-```
-
-because `shared/env.js` evaluates, at module top level:
+`shared/env.js` reads `process.env` at module top level, so the published ESM
+throws `ReferenceError: process is not defined` when loaded directly in a
+browser. Because `env.js` is imported by `errors.js`, this takes down the whole
+module graph — nothing loads.
 
 ```js
+// shared/env.js
 export const DEV = process.env.NODE_ENV === 'development';
 export const TEST = process.env.NODE_ENV === 'test';
 ```
 
-`env.js` is imported by the core of the library, so the whole graph — 166 modules
-reachable from `index.js` + `data/index.js` — fails to evaluate. Nothing loads.
-
-## Why it is easy to miss
-
-The file's own comment names the assumption:
+The file's comment states the assumption:
 
 > Even though the value of this constant uses Node.js specific APIs, pretty much
 > every bundler replaces the expression below with either `development` or
 > `production`
 
-That is true of the documented setups (Vite, Next, Bun). But it means the package
-as published is not loadable by the runtime it targets, and the failure is
-invisible from Node: `await import("typegpu")` in a Node script succeeds, because
-Node has `process`. So a test suite that imports the package passes while the
-browser build is broken.
+That holds for the documented setups. It also means the package as published is
+not loadable by the runtime it targets, while `package.json` advertises
 
-It also makes the `exports` map misleading. A consumer reading it has every
-reason to expect `./index.js` to be a loadable ES module.
+```json
+"exports": { ".": "./index.js", "./data": "./data/index.js", ... }
+```
 
-## Suggested fixes, cheapest first
+with no `browser` condition and no bundled build. A consumer reading that has
+every reason to expect `./index.js` to be a loadable ES module.
 
-1. **Guard the read.** One line, no build change, no behavioural difference under
-   any bundler, since the expression still folds:
+### Why this is easy to miss
 
-   ```js
-   const env = typeof process !== 'undefined' ? process.env : {};
-   export const DEV = env.NODE_ENV === 'development';
-   export const TEST = env.NODE_ENV === 'test';
-   ```
+**It is invisible from Node.** `await import('typegpu')` in a Node script
+succeeds, because Node has `process`. A test suite or CI job that imports the
+package passes while direct browser loading is broken.
 
-2. Ship a `browser` condition in `exports` pointing at a variant with the
-   constants inlined to `false`.
+### Reproduction
 
-3. Document that a bundler is required, and that the `exports` entries are not
-   directly loadable.
-
-(1) is enough and costs nothing.
-
-## Reproduction
-
-The bare specifiers have to be resolved first, or the page fails on those instead
-— TypeGPU has three runtime dependencies (`tsover-runtime`, `typed-binary`,
-`tinyest`). An import map covers them, and then `process` is the only thing left:
+TypeGPU's three runtime dependencies have to be resolved first or the page fails
+on those instead, so the import map below covers them. With that in place,
+`process` is the only thing left:
 
 ```sh
 npm i typegpu@0.12.0
 mkdir -p www
 for p in typegpu tsover-runtime typed-binary tinyest; do cp -R node_modules/$p www/$p; done
-cat > www/i.html <<'HTML'
+cat > www/index.html <<'HTML'
 <script type="importmap">{"imports":{
   "typegpu":        "./typegpu/index.js",
   "tsover-runtime": "./tsover-runtime/dist/index.js",
@@ -98,21 +68,65 @@ HTML
 python3 -m http.server -d www 8080
 ```
 
+Open `http://localhost:8080/`:
+
 ```
 Uncaught ReferenceError: process is not defined
     at typegpu/shared/env.js:9
 ```
 
-Contrast with `node -e 'import("typegpu").then(m => console.log(!!m.default))'`,
-which prints `true` — Node has `process`, so nothing upstream of a browser sees
-this.
+Contrast with `node -e "import('typegpu').then(m => console.log(!!m.default))"`,
+which prints `true`.
 
-## What tessera does about it
+### Scope
+
+This is only about `process.env`. Shipping bare specifiers for real dependencies
+is normal, and resolving them is the consumer's job — the import map above is not
+a complaint. The `process.env` read is different in kind, because it fails **even
+with** a correct import map: there is no `process` to read.
+
+### Suggested fix
+
+Guarding the read is one line, changes nothing under any bundler (the expression
+still folds), and makes the published `exports` entries honest:
+
+```js
+const env = typeof process !== 'undefined' ? process.env : {};
+export const DEV = env.NODE_ENV === 'development';
+export const TEST = env.NODE_ENV === 'test';
+```
+
+Alternatives, if preferred: ship a `browser` condition in `exports` pointing at a
+variant with the constants inlined to `false`, or document that a bundler is
+required and that the `exports` entries are not directly loadable.
+
+Happy to open a PR for the one-line version if that is welcome.
+
+<!-- ──────────────────── END ISSUE BODY ───────────────────── -->
+
+## Not part of the issue — what tessera does about it
 
 `spike/wgsl-baseline/vendor.mjs` performs the substitution a bundler would
-(`DEV = false`, `TEST = false`), then rescans the whole vendored tree for any
-remaining `process.` / `require(` / `node:` / `__dirname` reference and walks the
-module graph for missing files. Both checks run in `npm test` via
-`vendor.mjs --check`, and both were falsified before being trusted, so a TypeGPU
-upgrade that reintroduces a host-only reference fails there rather than in a
-browser console.
+(`DEV = false`, `TEST = false`) and rewrites the three bare specifiers to
+relative paths, so the vendored tree loads from a plain `python3 -m http.server`
+with no bundler and no import map.
+
+It then refuses to trust itself. It rescans the tree for any remaining
+`process.` / `require(` / `node:` / `__dirname` reference and walks the module
+graph the browser will fetch. `vendor.mjs --check` runs both against an existing
+tree and is wired into `npm test`, so a TypeGPU upgrade that reintroduces either
+problem fails there rather than in a browser console.
+
+Every guard was falsified before being trusted, including the scanner itself:
+
+| perturbation | caught by |
+|---|---|
+| restore `from 'tsover-runtime'` (single quotes) | bare-specifier scan |
+| restore `process.env.NODE_ENV` | host-only scan |
+| delete a reachable leaf module | module-graph walk |
+| break the scanner to double-quotes-only | **positive control** |
+
+The positive control exists because the first version of this check reported
+"0 bare imports" from a grep that only matched double quotes, while TypeGPU
+writes `from 'tsover-runtime'`. A check that returns zero is worthless until it
+has been shown capable of returning non-zero.
