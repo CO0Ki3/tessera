@@ -15,3 +15,6 @@ dist/
 spike/mlir-spirv/l0b/
 spike/mlir-spirv/l3/
 build/
+build-noopt/
+build-unroll/
+build-ragged/

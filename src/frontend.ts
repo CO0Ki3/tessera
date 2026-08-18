@@ -149,7 +149,12 @@ function readSpecName(specNode: ts.Expression): string {
  * a body we do not actually read would be exactly the "fell off the fast path"
  * failure the project's admission rule forbids, so this is a hard error.
  */
-function checkCanonicalBody(call: ts.CallExpression, reduceAxes: readonly AxisIR[]): void {
+function checkCanonicalBody(
+  call: ts.CallExpression,
+  reduceAxes: readonly AxisIR[],
+  bindings: readonly BindingIR[],
+  raggedNames: ReadonlySet<string>,
+): { padded: Set<string> } {
   const body = call.arguments[1];
   if (!body || (!ts.isArrowFunction(body) && !ts.isFunctionExpression(body))) {
     fail(body ?? call, "kernel()'s second argument must be a function");
@@ -175,6 +180,7 @@ function checkCanonicalBody(call: ts.CallExpression, reduceAxes: readonly AxisIR
   ]);
 
   let forOf = 0, mma = 0, store = 0, zeros = 0;
+  const padded = new Set<string>();
 
   // Tokens (punctuation, keywords, identifiers, literals) carry no admission
   // decision of their own — the node that owns them is already constrained, and
@@ -209,8 +215,28 @@ function checkCanonicalBody(call: ts.CallExpression, reduceAxes: readonly AxisIR
     else if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
       if (n.expression.text === "mma") mma++;
       if (n.expression.text === "zeros") zeros++;
-    } else if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)
-               && n.expression.name.text === "store") store++;
+    } else if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
+      const method = n.expression.name.text;
+      if (method === "store") store++;
+      if (method === "pad") {
+        // `a.tile(...).pad(0)` — the receiver is the tile() call, whose own
+        // receiver names the binding.
+        const inner = n.expression.expression;
+        const owner = ts.isCallExpression(inner) && ts.isPropertyAccessExpression(inner.expression)
+          && ts.isIdentifier(inner.expression.expression)
+          ? inner.expression.expression.text : undefined;
+        if (!owner || !bindings.some((b) => b.name === owner)) {
+          fail(n, `.pad() must be called on a binding's tile, as <binding>.tile(...).pad(0)`);
+        }
+        const arg = n.arguments[0];
+        if (!arg || !ts.isNumericLiteral(arg) || arg.text !== "0") {
+          fail(arg ?? n,
+            `.pad() takes the reduction's identity element, which for a sum is 0. ` +
+            `A non-annihilating pad silently corrupts ragged edges.`);
+        }
+        padded.add(owner);
+      }
+    }
 
     ts.forEachChild(n, visit);
   };
@@ -224,6 +250,7 @@ function checkCanonicalBody(call: ts.CallExpression, reduceAxes: readonly AxisIR
       `General body compilation is not implemented — refusing rather than emitting something ` +
       `that is not what you wrote.`);
   }
+  return { padded };
 }
 
 // ---------------------------------------------------------------------------
@@ -334,11 +361,43 @@ export function compileToIR(entryFile: string): KernelIR {
   }
   if (!bindings.some((b) => b.mode === "write")) fail(specNode, "no output binding");
 
-  if (grid.some((a) => a.fit === "ragged") || reduce.some((a) => a.fit === "ragged")) {
-    fail(specNode, "ragged axes are not implemented in this build — every axis must divide its block exactly");
+  // ---- masks -------------------------------------------------------------
+  // Derived, never declared. A load or store through a ragged axis is masked;
+  // that is the entire rule. The surface's job was to make the user name the
+  // identity element, which is the one fact the compiler cannot infer. Deciding
+  // WHERE masks go is the compiler's job, and is the demo the project exists for:
+  // change one literal and every boundary condition is re-derived.
+  const raggedNames = new Set(
+    [...grid, ...reduce].filter((a) => a.fit === "ragged").map((a) => a.name));
+
+  const maskedLoads: string[] = [];
+  for (const b of bindings) {
+    for (const ax of b.axes) if (raggedNames.has(ax)) maskedLoads.push(`${b.name}:${ax}`);
   }
 
-  checkCanonicalBody(call, reduce);
+  const { padded } = checkCanonicalBody(call, reduce, bindings, raggedNames);
 
-  return { name, dtype, tile, grid, reduce, bindings, ...derive(tile, dtype, grid) };
+  // Every read binding touching a ragged axis needs its identity named; the
+  // surface enforces this too, but this message names the binding directly.
+  for (const b of bindings) {
+    const needsPad = b.mode === "read" && b.axes.some((ax) => raggedNames.has(ax));
+    if (needsPad && !padded.has(b.name)) {
+      fail(specNode,
+        `binding "${b.name}" loads through ragged axis ` +
+        `"${b.axes.find((ax) => raggedNames.has(ax))}", so out-of-range lanes need an ` +
+        `identity: write ${b.name}.tile(...).pad(0).`);
+    }
+    if (!needsPad && padded.has(b.name)) {
+      fail(specNode,
+        `binding "${b.name}" has .pad() but no ragged axis — the mask would be dead. ` +
+        `Remove it.`);
+    }
+  }
+
+  const pad = 0;
+
+  return {
+    name, dtype, tile, grid, reduce, bindings, maskedLoads, pad,
+    ...derive(tile, dtype, grid),
+  };
 }

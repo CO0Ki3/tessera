@@ -37,6 +37,15 @@ export interface KernelIR {
   /** One or more, each blocked at bk. */
   readonly reduce: readonly AxisIR[];
   readonly bindings: readonly BindingIR[];
+  /**
+   * Loads and stores that need a boundary mask, as "binding:axis" pairs.
+   * Derived, not declared: a load through a ragged axis is masked, and that is
+   * the whole rule. The surface's job was to make the user name the identity
+   * element; deciding WHERE masks go is the compiler's.
+   */
+  readonly maskedLoads: readonly string[];
+  /** The identity element for masked loads, from `.pad(x)`. Always 0 today. */
+  readonly pad: number;
 
   // ---- derived, folded once by the front end -------------------------------
   readonly workgroup: readonly [number, number, number];

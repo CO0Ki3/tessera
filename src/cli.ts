@@ -49,7 +49,14 @@ function report(ir: KernelIR): void {
   console.log(`  bindings    ${ir.bindings.map((b) => `${b.name}[${b.axes.join(",")}]:${b.mode}`).join("  ")}`);
   console.log(`  workgroup   ${wgx}x${wgy}x${wgz}   fragment ${tm}x${tn}   ` +
               `wgBytes ${ir.workgroupBytes}   dispatch ${ir.dispatch.join("x")}`);
-  console.log(`  masks       none  (every axis divides its block exactly)`);
+  const raggedAxes = [...ir.grid, ...ir.reduce].filter((x) => x.fit === "ragged");
+  console.log(`  masks       ${ir.maskedLoads.length
+    ? `${ir.maskedLoads.join("  ")}   pad ${ir.pad}`
+    : "none  (every axis divides its block exactly)"}`);
+  if (raggedAxes.length) {
+    console.log(`  ragged      ${raggedAxes.map((x) =>
+      `${x.name}: ${x.extent} = ${x.tiles - 1}x${x.block} + ${x.extent % x.block}`).join("   ")}`);
+  }
 }
 
 function main(): void {
@@ -163,7 +170,8 @@ function main(): void {
     bindings: ir.bindings.map((b, i) => ({
       name: b.name, binding: i, group: 0, mode: b.mode, elements: b.elements, axes: b.axes,
     })),
-    maskedLoads: [] as string[],
+    maskedLoads: ir.maskedLoads,
+    pad: ir.pad,
   };
   writeFileSync(at(".json"), JSON.stringify(manifest, null, 2) + "\n");
   console.log(`  manifest    ✓ ${at(".json")}`);

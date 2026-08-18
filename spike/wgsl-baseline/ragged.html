@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tessera — ragged axes</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+    margin: 0; padding: 24px; max-width: 940px; background: Canvas; color: CanvasText;
+  }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .sub { opacity: .65; margin: 0 0 18px; }
+  button { font: inherit; padding: 7px 16px; cursor: pointer; border: 1px solid CanvasText;
+           border-radius: 5px; background: transparent; color: inherit; }
+  button:disabled { opacity: .4; cursor: default; }
+  pre { white-space: pre-wrap; word-break: break-word; margin: 16px 0 0; padding: 16px;
+        border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
+        border-radius: 6px; overflow-x: auto; }
+  .ok { color: #12894a; font-weight: 600; } .bad { color: #c02626; font-weight: 600; }
+  .warn { color: #a06a00; } .dim { opacity: .6; } .add { color: #12894a; }
+  @media (prefers-color-scheme: dark) {
+    .ok, .add { color: #4ade80; } .bad { color: #f87171; } .warn { color: #fbbf24; }
+  }
+</style>
+</head>
+<body>
+
+<h1>tessera — ragged axes</h1>
+<p class="sub">
+  The same kernel body at <b>1000 &times; 750 &times; 500</b>, where no axis divides its
+  block. Every boundary condition is synthesised by the compiler from the extents
+  in the types; the loop, the accumulator and the store are character-identical to
+  the aligned kernel.
+</p>
+
+<button id="run">Run</button>
+<pre id="log">Ready.</pre>
+
+<script type="module">
+import { initDevice, compile } from "./run.js";
+import { createRunner, measureInterleaved } from "./measure.js";
+import { randomF32, matmulReluF32, allClose, summarize, bitExactCount,
+         dotAbsSum, withinErrorBound } from "./oracle.js";
+
+const logEl = document.getElementById("log");
+const btn = document.getElementById("run");
+let buf = "";
+const write = (s = "") => { buf += s + "\n"; logEl.innerHTML = buf; };
+const yieldToPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+const f = (x, n = 3) => Number(x).toFixed(n);
+
+btn.addEventListener("click", async () => {
+  btn.disabled = true; buf = "";
+  try { await main(); }
+  catch (e) { write(`\n<span class="bad">FAILED</span>  ${e.message}`); }
+  finally { btn.disabled = false; }
+});
+
+async function main() {
+  // ---- what the compiler decided ------------------------------------------
+  const man = await (await fetch("./matmul-ragged.json")).json();
+  const M = man.axes.m, N = man.axes.n, K = man.axes.k;
+  const dims = { M, N, K };
+
+  write("── what tessera derived from the types ────────────");
+  write(`kernel        ${man.name}   entry "${man.entryPoint}"`);
+  write(`axes          m=${M}  n=${N}  k=${K}`);
+  write(`workgroup     ${man.workgroup.join("x")}   fragment ${man.fragment.join("x")}   ` +
+        `dispatch ${man.dispatch.join("x")}`);
+  write(`pad           ${man.pad}   <span class="dim">(the one fact the compiler cannot infer)</span>`);
+  write(`masked        ${man.maskedLoads.join("  ")}`);
+  write("");
+  write(`<span class="dim">tail blocks:  m ${M} = ${man.dispatch[1] - 1}x64 + ${M % 64}` +
+        `   n ${N} = ${man.dispatch[0] - 1}x64 + ${N % 64}   k ${K} = ${Math.floor(K / 16)}x16 + ${K % 16}</span>`);
+  write("");
+
+  // ---- the source diff, which is the whole point ---------------------------
+  write("── what the user wrote differently ────────────────");
+  write(`  <span class="dim">-</span> const M = axis("m", 1024, T.bm);`);
+  write(`  <span class="add">+</span> const M = raggedAxis("m", 1000, T.bm);`);
+  write(`  <span class="dim">-</span>   acc = mma(a.tile(at.m, k), b.tile(k, at.n), acc);`);
+  write(`  <span class="add">+</span>   acc = mma(a.tile(at.m, k).pad(0), b.tile(k, at.n).pad(0), acc);`);
+  write(`<span class="dim">  ...and nothing else. No mask expressions anywhere in the body.</span>`);
+  write("");
+
+  // ---- run -----------------------------------------------------------------
+  const ctx = await initDevice();
+  write("── run ────────────────────────────────────────────");
+  write(`adapter       ${ctx.adapterInfo.vendor} / ${ctx.adapterInfo.architecture}`);
+
+  const src = await (await fetch("./matmul-ragged.wgsl")).text();
+  const { pipeline, messages } = await compile(ctx.device, src, man.entryPoint, "ragged");
+  for (const m of messages) write(`<span class="warn">${m.type}</span> ${m.message}`);
+  write(`shader        ${src.split("\n").length} lines   ` +
+        `${src.match(/< \d+u\)/g)?.length ?? 0} synthesised bound checks`);
+
+  const a = randomF32(M * K, 0x1234);
+  const b = randomF32(K * N, 0x5678);
+  const runner = createRunner(ctx, pipeline, a, b, dims, "ragged");
+
+  const stats = await measureInterleaved([runner], { warmup: 6, reps: 15 });
+  const st = stats.get("ragged");
+  if (st) {
+    write(`gpu           min ${st.minQ}q  med ${st.medianQ}q  spread ${st.spreadQ}q   ` +
+          `${f(2 * M * N * K / (st.minNs * 1e-9) / 1e9, 1)} GFLOP/s`);
+  }
+  const got = await runner.result();
+  const s = summarize(got);
+  write(`output        min ${f(s.min)}  max ${f(s.max)}  mean ${f(s.mean)}  ` +
+        `zeros ${s.zeros}  nans ${s.nans}`);
+  write("");
+
+  // ---- the check -----------------------------------------------------------
+  write("── differential ───────────────────────────────────");
+  write(`<span class="dim">CPU reference over ${(2 * M * N * K / 1e6).toFixed(0)}M flops…</span>`);
+  await yieldToPaint();
+
+  const want = matmulReluF32(a, b, dims, { contract: true });
+  const exact = bitExactCount(got, want);
+  write(`bit-exact vs FMA reference   ${exact} / ${got.length}  ` +
+        `(${(100 * exact / got.length).toFixed(4)}%)`);
+
+  if (exact === got.length) {
+    write("");
+    write(`<span class="ok">PASS</span>  every masked lane is right, including the ` +
+          `${M % 64}-row, ${N % 64}-column and ${K % 16}-deep tails.`);
+    write(`<span class="dim">A wrong mask would not be subtle here: it would read a neighbouring row,</span>`);
+    write(`<span class="dim">or accumulate garbage past the k tail, and the diff would be O(1).</span>`);
+  } else {
+    const cmp = allClose(got, want, { rtol: 1e-5, atol: 1e-6 });
+    write(`maxAbsDiff  ${cmp.maxAbsDiff.toExponential(3)}`);
+    if (cmp.worstIndex >= 0) {
+      const r = Math.floor(cmp.worstIndex / N), c = cmp.worstIndex % N;
+      write(`worst       c[${r}][${c}]  gpu ${cmp.worstGot}  cpu ${cmp.worstWant}` +
+            `   <span class="dim">(tail starts at row ${M - (M % 64)}, col ${N - (N % 64)})</span>`);
+    }
+    const absSum = dotAbsSum(a, b, dims);
+    const bound = withinErrorBound(got, want, absSum, K);
+    write("");
+    write(bound.ok
+      ? `<span class="warn">NOT BIT-EXACT, but inside the f32 error bound</span> — worst ratio ` +
+        `${f(bound.worstRatio, 4)}. Suspect the accumulation order, not the masks.`
+      : `<span class="bad">FAIL</span>  ${bound.violations} elements exceed what f32 permits. ` +
+        `That is a mask bug, not rounding.`);
+  }
+  runner.destroy();
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,69 @@
+{
+  "name": "matmul_relu_ragged",
+  "entryPoint": "matmul_relu_ragged",
+  "dtype": "f32",
+  "workgroup": [
+    16,
+    16,
+    1
+  ],
+  "dispatch": [
+    12,
+    16,
+    1
+  ],
+  "fragment": [
+    4,
+    4
+  ],
+  "workgroupBytes": 8192,
+  "axes": {
+    "m": 1000,
+    "n": 750,
+    "k": 500
+  },
+  "bindings": [
+    {
+      "name": "a",
+      "binding": 0,
+      "group": 0,
+      "mode": "read",
+      "elements": 500000,
+      "axes": [
+        "m",
+        "k"
+      ]
+    },
+    {
+      "name": "b",
+      "binding": 1,
+      "group": 0,
+      "mode": "read",
+      "elements": 375000,
+      "axes": [
+        "k",
+        "n"
+      ]
+    },
+    {
+      "name": "c",
+      "binding": 2,
+      "group": 0,
+      "mode": "write",
+      "elements": 750000,
+      "axes": [
+        "m",
+        "n"
+      ]
+    }
+  ],
+  "maskedLoads": [
+    "a:m",
+    "a:k",
+    "b:k",
+    "b:n",
+    "c:m",
+    "c:n"
+  ],
+  "pad": 0
+}

@@ -20,7 +20,7 @@
  * sidesteps strided memrefs and subviews, where MemRefToSPIRV is least tolerant.
  */
 
-import type { KernelIR } from "./ir.ts";
+import type { AxisIR, KernelIR } from "./ir.ts";
 
 const SC = "#spirv.storage_class<StorageBuffer>";
 const WG = "#spirv.storage_class<Workgroup>";
@@ -72,9 +72,20 @@ export function emitMLIR(k: KernelIR, opts: EmitOptions = {}): string {
     `#spirv.entry_point_abi<workgroup_size = [${wgx}, ${wgy}, 1]>} {`, 2);
 
   // ---- constants -----------------------------------------------------------
+  const ragged = (a: AxisIR) => a.fit === "ragged";
+  const anyRagged = [...k.grid, ...k.reduce].some(ragged);
+
   const needed = new Set<number>([
     0, 1, bk, bm, bn, rk.extent, gn.extent, threads, tm, tn, bm * bk, bk * bn,
   ]);
+  if (anyRagged) {
+    // Extents to compare against, and the last valid flat index of each buffer
+    // so an out-of-range load can be clamped to a legal address instead of
+    // branching. Emitting these only when something is ragged keeps the exact
+    // case byte-identical to what it was before masks existed.
+    for (const ax of [...k.grid, ...k.reduce]) needed.add(ax.extent);
+    for (const bd of k.bindings) needed.add(bd.elements - 1);
+  }
   for (let i = 0; i < Math.max(tm, tn); i++) needed.add(i);   // fragment offsets
   for (const v of [...needed].sort((x, y) => x - y)) B(`%c${v} = arith.constant ${v} : index`);
   B(`%f0 = arith.constant 0.0 : ${ty}`);
@@ -112,7 +123,20 @@ export function emitMLIR(k: KernelIR, opts: EmitOptions = {}): string {
   B(`%gr2 = arith.muli %gr, %c${stride(a)} : index`, 5);
   B(`%gc = arith.addi %kk, %cc : index`, 5);
   B(`%off = arith.addi %gr2, %gc : index`, 5);
-  B(`%val = memref.load %${a.name}[%off] : memref<${a.elements}x${ty}, ${SC}>`, 5);
+  if (ragged(gm) || ragged(rk)) {
+    // Masked load, branchless: clamp the address so the access is always legal,
+    // then select the identity for lanes that were out of range. A branch here
+    // would diverge across a workgroup for exactly one block per row.
+    const conds: string[] = [];
+    if (ragged(gm)) { B(`%okr = arith.cmpi ult, %gr, %c${gm.extent} : index`, 5); conds.push("%okr"); }
+    if (ragged(rk)) { B(`%okc = arith.cmpi ult, %gc, %c${rk.extent} : index`, 5); conds.push("%okc"); }
+    B(conds.length === 2 ? `%ok = arith.andi %okr, %okc : i1` : `%ok = ${conds[0]} : i1`, 5);
+    B(`%safe = arith.minui %off, %c${a.elements - 1} : index`, 5);
+    B(`%raw = memref.load %${a.name}[%safe] : memref<${a.elements}x${ty}, ${SC}>`, 5);
+    B(`%val = arith.select %ok, %raw, %f0 : ${ty}`, 5);
+  } else {
+    B(`%val = memref.load %${a.name}[%off] : memref<${a.elements}x${ty}, ${SC}>`, 5);
+  }
   B(`memref.store %val, %As[%i] : memref<${bm * bk}x${ty}, ${WG}>`, 5);
   B(`}`, 4);
 
@@ -124,7 +148,17 @@ export function emitMLIR(k: KernelIR, opts: EmitOptions = {}): string {
   B(`%gr2 = arith.muli %gr, %c${stride(b)} : index`, 5);
   B(`%gc = arith.addi %colBase, %cc : index`, 5);
   B(`%off = arith.addi %gr2, %gc : index`, 5);
-  B(`%val = memref.load %${b.name}[%off] : memref<${b.elements}x${ty}, ${SC}>`, 5);
+  if (ragged(rk) || ragged(gn)) {
+    const conds: string[] = [];
+    if (ragged(rk)) { B(`%okr = arith.cmpi ult, %gr, %c${rk.extent} : index`, 5); conds.push("%okr"); }
+    if (ragged(gn)) { B(`%okc = arith.cmpi ult, %gc, %c${gn.extent} : index`, 5); conds.push("%okc"); }
+    B(conds.length === 2 ? `%ok = arith.andi %okr, %okc : i1` : `%ok = ${conds[0]} : i1`, 5);
+    B(`%safe = arith.minui %off, %c${b.elements - 1} : index`, 5);
+    B(`%raw = memref.load %${b.name}[%safe] : memref<${b.elements}x${ty}, ${SC}>`, 5);
+    B(`%val = arith.select %ok, %raw, %f0 : ${ty}`, 5);
+  } else {
+    B(`%val = memref.load %${b.name}[%off] : memref<${b.elements}x${ty}, ${SC}>`, 5);
+  }
   B(`memref.store %val, %Bs[%i] : memref<${bk * bn}x${ty}, ${WG}>`, 5);
   B(`}`, 4);
 
@@ -217,7 +251,19 @@ export function emitMLIR(k: KernelIR, opts: EmitOptions = {}): string {
       // Rule 2: cmpf+select, not maximumf/maxnumf. See the header.
       B(`%rc${i} = arith.cmpf ogt, %out#${i}, %f0 : ${ty}`);
       B(`%rl${i} = arith.select %rc${i}, %out#${i}, %f0 : ${ty}`);
-      B(`memref.store %rl${i}, %${c.name}[%so${i}] : memref<${c.elements}x${ty}, ${SC}>`);
+      if (ragged(gm) || ragged(gn)) {
+        // A store cannot be clamped -- writing to a legal-but-wrong address
+        // corrupts a real element -- so this one is a genuine conditional.
+        const conds: string[] = [];
+        if (ragged(gm)) { B(`%sm${i} = arith.cmpi ult, %sr${m}, %c${gm.extent} : index`); conds.push(`%sm${i}`); }
+        if (ragged(gn)) { B(`%sn${i} = arith.cmpi ult, %sc${i}, %c${gn.extent} : index`); conds.push(`%sn${i}`); }
+        B(conds.length === 2 ? `%sk${i} = arith.andi %sm${i}, %sn${i} : i1` : `%sk${i} = ${conds[0]} : i1`);
+        B(`scf.if %sk${i} {`);
+        B(`  memref.store %rl${i}, %${c.name}[%so${i}] : memref<${c.elements}x${ty}, ${SC}>`);
+        B(`}`);
+      } else {
+        B(`memref.store %rl${i}, %${c.name}[%so${i}] : memref<${c.elements}x${ty}, ${SC}>`);
+      }
     }
   }
   B();

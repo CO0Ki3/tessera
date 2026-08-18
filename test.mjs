@@ -86,6 +86,11 @@ const NEGATIVES = [
   // Caught by GATE 1 — the surface types reject it before the front end ever
   // runs. That is the better outcome, and worth asserting as such.
   ["gridblock.kernel.ts", "does not type-check", "grid axis blocked at 32 while tile.bm is 64"],
+  // Ragged. All three are caught by GATE 1 — the surface types reject them
+  // before the front end runs, with the diagnostics the design specified.
+  ["nopad.kernel.ts",   "this block is ragged", "ragged load with no identity named"],
+  ["badpad.kernel.ts",  "does not type-check",  "a non-annihilating pad reaching a reduction"],
+  ["deadpad.kernel.ts", "does not type-check",  ".pad() on an axis that is not ragged"],
 ];
 
 for (const [file, rule, why] of NEGATIVES) {
@@ -94,6 +99,33 @@ for (const [file, rule, why] of NEGATIVES) {
   else if (!r.out.includes(rule)) {
     bad(`${file} rejected, but not with ${rule}:\n      ${r.out.trim().split("\n").pop()}`);
   } else ok(`${file} → ${rule}  (${why})`);
+}
+
+// ---- 2b. the ragged kernel builds, and only it has masks -------------------
+console.log("\nragged axes");
+const rag = build("examples/matmul-ragged.kernel.ts");
+if (!rag.ok) {
+  bad(`examples/matmul-ragged.kernel.ts failed to build\n${rag.out}`);
+} else {
+  ok("builds: 1000 x 750 x 500, no axis divides its block");
+  const rw = readFileSync(join(out, "matmul_relu_ragged.wgsl"), "utf8");
+  const aw = readFileSync(join(out, "matmul_relu_f32.wgsl"), "utf8");
+  const bounds = (t) => (t.match(/< \d+u\)/g) ?? []).length;
+  // The claim under test is not "masks exist" but "masks exist EXACTLY where
+  // raggedness is". An aligned kernel that grew a bound check would mean the
+  // emitter is hedging, which is the cost the whole static design pays to avoid.
+  if (bounds(rw) > 0 && bounds(aw) === 0) {
+    ok(`${bounds(rw)} synthesised bound checks in the ragged kernel, 0 in the aligned one`);
+  } else {
+    bad(`ragged has ${bounds(rw)} bound checks, aligned has ${bounds(aw)} — expected >0 and 0`);
+  }
+  const rm = JSON.parse(readFileSync(join(out, "matmul_relu_ragged.json"), "utf8"));
+  const expected = ["a:m", "a:k", "b:k", "b:n", "c:m", "c:n"];
+  if (JSON.stringify(rm.maskedLoads) === JSON.stringify(expected) && rm.pad === 0) {
+    ok(`manifest reports the masked pairs: ${rm.maskedLoads.join(" ")}`);
+  } else {
+    bad(`manifest maskedLoads = ${JSON.stringify(rm.maskedLoads)}, pad = ${rm.pad}`);
+  }
 }
 
 // ---- 3. our own source ----------------------------------------------------

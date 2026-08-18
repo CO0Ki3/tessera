@@ -208,16 +208,10 @@ Two costs are now on the record, and only one of them is established:
   `phi_` variables (374 lines against 118) and Tint must re-structurize it. On a
   compile-in-the-browser story this is on the critical path, and it is a robust
   signal rather than measurement noise.
-- **Runtime is 1.57x slower, cause unknown.** With a proper measurement
-  (`spike/wgsl-baseline/measure.js`: warm up, 25 interleaved repetitions, report
-  the minimum) the figure is stable and reproducible: hand 7 quanta, tessera 11,
-  spread 1, non-overlapping. Three hypotheses were tested and all refuted —
-  storage access mode (1.00x both ways), integer ALU work from loop-invariant
-  index recomputation (1.00x), and unstructured control flow with 144 phi
-  variables (unrolling made it 0.73x, i.e. *worse*). Further progress needs the
-  generated MSL rather than a fourth guess at the WGSL level. Parked: 1.57x on an
-  untuned kernel is not project-threatening, and it is not worth delaying the
-  ragged-axis demo for.
+- **Runtime is 1.57× slower** (64% of hand-written), measured reliably. Three
+  hypotheses refuted; the remaining one is that the extra translation boundaries
+  are themselves the cost, which the direct WGSL printer will settle. See
+  [`002-performance.md`](002-performance.md).
 
 A third consequence: the direct WGSL printer scoped as week-4 insurance keeps its
 value regardless, now as the *third oracle*. With the MLIR path bit-exact today,
@@ -251,57 +245,15 @@ MLIR moves to a later experiment. That decision is cheap in week 0 and expensive
   Keep every checker interaction behind a thin `TesseraProgram` façade (~6 methods) so the eventual
   port is a day, not a rewrite. Do this in week 2, not week 20.
 
-## 6a. Standing invariant: generated code must approach hand-written
+## 6a. Performance
 
-**This is the compiler's job, not a nice-to-have.** The user's alternative to
-tessera is writing WGSL by hand. Every percent the generated kernel gives away is
-subtracted directly from the reason to use the compiler at all — a kernel
-compiler that settles at 64% of hand-written has not shipped an unfinished
-feature, it has shipped a failed value proposition. Triton's credibility rests on
-reaching ~90% of hand-tuned on real shapes; that is the standard this is measured
-against, not "correct and somewhat slower".
+The generated kernel currently reaches **64%** of the hand-written one's
+throughput (7 quanta vs 11). That is a failed value proposition, not an
+unfinished feature — the user's alternative is writing WGSL by hand.
 
-So it is recorded here as an invariant rather than a task, because a task gets
-closed and an invariant keeps being checked:
-
-> **The canonical kernel, generated, must reach at least 80% of the hand-written
-> kernel's throughput on the same machine in the same session.**
-> Currently **64%** (7 quanta vs 11). Not met.
-
-Now that `spike/wgsl-baseline/measure.js` produces a stable figure (spread of one
-quantum, reproducible across sessions), this is CI-checkable rather than a matter
-of opinion, and it should be re-checked on every codegen change.
-
-### What the gap probably is, and the experiment that decides it
-
-The three refuted hypotheses (§ spike/mlir-spirv README) were all "tessera's
-codegen makes a worse choice". None survived. The remaining shape of the problem
-is different: the generated path crosses **four translation boundaries** that the
-hand-written path does not —
-
-```
-hand      WGSL ------------------------------------> Tint -> MSL
-tessera   IR -> MLIR -> SPIR-V -> naga -> WGSL -----> Tint -> MSL
-```
-
-— and information can be lost at each one. If that is what the 1.57x is, no
-amount of improving our MLIR will close it, and the fix is to shorten the chain.
-
-**The decisive experiment is already scoped**: the direct WGSL printer, planned
-as week-4 insurance and as the third oracle. Same front end, same IR, two
-backends. Run both through `measure.js`:
-
-- direct printer reaches ~7 quanta → the tax is the MLIR chain, and the printer
-  stops being insurance and becomes the performance path
-- direct printer also lands at ~11 quanta → the tax is our IR and codegen
-  decisions, and MLIR is exonerated
-
-Either answer is worth having, and it is a much sharper question than the
-WGSL-level guessing that produced three refutations.
-
-**Why it is not being chased right now:** the ragged-axis work changes codegen —
-masks appear in the inner loop and the store — so anything tuned before it lands
-gets re-tuned after. Sequencing, not priority.
+Recorded as a standing invariant with the measurement method, the three
+hypotheses already refuted, and the experiment that decides the remaining one:
+**[`002-performance.md`](002-performance.md)**.
 
 ## 7. Deferred, explicitly
 
