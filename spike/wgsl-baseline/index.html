@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tessera spike — baseline WGSL matmul</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+    margin: 0; padding: 24px; max-width: 900px;
+    background: Canvas; color: CanvasText;
+  }
+  h1 { font-size: 15px; margin: 0 0 4px; letter-spacing: .02em; }
+  .sub { opacity: .65; margin: 0 0 20px; }
+  button {
+    font: inherit; padding: 7px 16px; cursor: pointer;
+    border: 1px solid CanvasText; border-radius: 5px;
+    background: transparent; color: inherit;
+  }
+  button:disabled { opacity: .4; cursor: default; }
+  pre {
+    white-space: pre-wrap; word-break: break-word;
+    margin: 18px 0 0; padding: 16px;
+    border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
+    border-radius: 6px; overflow-x: auto;
+  }
+  .ok   { color: #12894a; font-weight: 600; }
+  .bad  { color: #c02626; font-weight: 600; }
+  .warn { color: #a06a00; }
+  .dim  { opacity: .6; }
+  @media (prefers-color-scheme: dark) {
+    .ok { color: #4ade80; } .bad { color: #f87171; } .warn { color: #fbbf24; }
+  }
+</style>
+</head>
+<body>
+
+<h1>tessera spike — baseline WGSL matmul</h1>
+<p class="sub">
+  Hand-written tiled GEMM + fused ReLU, 1024&times;768&times;512, f32.<br>
+  Checked against an order-matched, <code>Math.fround</code>-exact CPU oracle.
+</p>
+
+<button id="run">Run</button>
+
+<pre id="log">Ready. Click Run.</pre>
+
+<script type="module">
+import { initDevice, compile, runMatmul } from "./run.js";
+import {
+  DIMS, randomF32, matmulReluF32, allClose, summarize,
+  dotAbsSum, withinErrorBound, bitExactCount,
+} from "./oracle.js";
+
+const logEl = document.getElementById("log");
+const btn = document.getElementById("run");
+let buf = "";
+
+const write = (s = "") => { buf += s + "\n"; logEl.innerHTML = buf; };
+const yieldToPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+const f = (x, n = 3) => Number(x).toFixed(n);
+
+btn.addEventListener("click", async () => {
+  btn.disabled = true;
+  buf = "";
+  try {
+    await main();
+  } catch (err) {
+    write(`\n<span class="bad">FAILED</span>  ${err.message}`);
+    if (err.stack) write(`<span class="dim">${err.stack.split("\n").slice(1, 4).join("\n")}</span>`);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function main() {
+  const { M, N, K } = DIMS;
+
+  // ---- device -------------------------------------------------------------
+  write("── device ─────────────────────────────────────────");
+  const ctx = await initDevice();
+  const ai = ctx.adapterInfo;
+  write(`adapter        ${ai.vendor} / ${ai.architecture} ${ai.device} ${ai.description}`);
+  write(`timestamp-query ${ctx.hasTimestamps ? "available" : "NOT available (wall-clock only)"}`);
+  write("");
+
+  const L = ctx.limits;
+  const usedBytes = (64 * 16 + 16 * 64) * 4;
+  const invocations = 16 * 16;
+  const storageOk = usedBytes <= L.maxComputeWorkgroupStorageSize;
+  const invOk = invocations <= L.maxComputeInvocationsPerWorkgroup;
+
+  write("── limits vs. what this tile assumes ──────────────");
+  write(`workgroup storage   ${usedBytes} B used / ${L.maxComputeWorkgroupStorageSize} B limit` +
+        `   ${storageOk ? '<span class="ok">ok</span>' : '<span class="bad">EXCEEDS</span>'}` +
+        `  <span class="dim">(sized against the 16384 guaranteed floor)</span>`);
+  write(`invocations/wg      ${invocations} used / ${L.maxComputeInvocationsPerWorkgroup} limit` +
+        `   ${invOk ? '<span class="ok">ok</span>' : '<span class="bad">EXCEEDS</span>'}` +
+        `  <span class="dim">(sits exactly at the guaranteed 256)</span>`);
+  write(`storage buffers     3 used / ${L.maxStorageBuffersPerShaderStage} limit`);
+  write(`workgroups/dim      16 max used / ${L.maxComputeWorkgroupsPerDimension} limit`);
+  write("");
+  if (!storageOk || !invOk) throw new Error("this adapter cannot run the chosen tile");
+
+  // ---- compile ------------------------------------------------------------
+  write("── compile ────────────────────────────────────────");
+  const source = await (await fetch("./matmul.wgsl")).text();
+  const t0 = performance.now();
+  const { pipeline, messages } = await compile(ctx.device, source);
+  write(`createComputePipelineAsync   ${f(performance.now() - t0)} ms`);
+  for (const m of messages) {
+    write(`<span class="warn">${m.type} ${m.line}:${m.col}</span>  ${m.message}`);
+  }
+  if (messages.length === 0) write(`<span class="ok">no diagnostics</span>`);
+  write("");
+
+  // ---- inputs -------------------------------------------------------------
+  write("── run ────────────────────────────────────────────");
+  const a = randomF32(M * K, 0x1234);
+  const b = randomF32(K * N, 0x5678);
+
+  const gpu = await runMatmul(ctx, pipeline, a, b, DIMS);
+  write(`workgroup ${gpu.workgroup.join("x")}   dispatch ${gpu.dispatch.join("x")}   ` +
+        `workgroupBytes ${gpu.workgroupBytes}`);
+  write(`wall (submit→done)   ${f(gpu.wallMs)} ms   ${f(gpu.gflopsWall, 1)} GFLOP/s ` +
+        `<span class="dim">(floor, includes queue latency)</span>`);
+  if (gpu.gpuMs !== null) {
+    write(`gpu (timestamps)     ${f(gpu.gpuMs)} ms   ${f(gpu.gflopsGpu, 1)} GFLOP/s`);
+    write(`<span class="dim">  Chrome quantizes timestamps to 100us unless developer features are enabled;</span>`);
+    write(`<span class="dim">  a suspiciously round number here means you are reading quantized data.</span>`);
+  }
+  const s = summarize(gpu.out);
+  write(`output   min ${f(s.min)}  max ${f(s.max)}  mean ${f(s.mean)}  ` +
+        `zeros ${s.zeros} <span class="dim">(~half, from relu)</span>  nans ${s.nans}`);
+  write("");
+
+  // ---- oracles ------------------------------------------------------------
+  // Two references, differing in ONE rounding, plus the error scale. The point
+  // is to identify which arithmetic the GPU actually performed rather than to
+  // absorb the difference into a tolerance.
+  write("── oracles ────────────────────────────────────────");
+  write(`<span class="dim">three CPU passes over ${(2 * M * N * K / 1e6).toFixed(0)}M flops, this blocks for a few seconds…</span>`);
+  await yieldToPaint();
+
+  let t1 = performance.now();
+  const wantPlain = matmulReluF32(a, b, DIMS, { contract: false });
+  write(`no-FMA   (two roundings per step)   ${f(performance.now() - t1, 0)} ms`);
+  await yieldToPaint();
+
+  t1 = performance.now();
+  const wantFma = matmulReluF32(a, b, DIMS, { contract: true });
+  write(`FMA      (one rounding per step)    ${f(performance.now() - t1, 0)} ms`);
+  await yieldToPaint();
+
+  t1 = performance.now();
+  const absSum = dotAbsSum(a, b, DIMS);
+  write(`SUM|a·b| (the error scale)          ${f(performance.now() - t1, 0)} ms`);
+  write("");
+
+  // ---- which arithmetic did the GPU do? -----------------------------------
+  write("── which arithmetic did the GPU do? ───────────────");
+  const exactPlain = bitExactCount(gpu.out, wantPlain);
+  const exactFma = bitExactCount(gpu.out, wantFma);
+  const cmpPlain = allClose(gpu.out, wantPlain, { rtol: 1e-5, atol: 1e-6 });
+  const cmpFma = allClose(gpu.out, wantFma, { rtol: 1e-5, atol: 1e-6 });
+  const pct = (n) => `${(100 * n / gpu.out.length).toFixed(4)}%`;
+
+  write(`vs no-FMA   bit-exact ${exactPlain} / ${gpu.out.length}  (${pct(exactPlain)})   maxAbsDiff ${cmpPlain.maxAbsDiff.toExponential(3)}`);
+  write(`vs FMA      bit-exact ${exactFma} / ${gpu.out.length}  (${pct(exactFma)})   maxAbsDiff ${cmpFma.maxAbsDiff.toExponential(3)}`);
+  write("");
+
+  const fmaWins = exactFma > exactPlain;
+  if (fmaWins) {
+    write(`<span class="ok">The GPU contracted.</span> It matches the single-rounding reference far more`);
+    write(`closely, which is the backend fusing acc + a*b into one fused multiply-add.`);
+    write(`<span class="dim">Residual mismatches against the FMA oracle are double-rounding in the</span>`);
+    write(`<span class="dim">emulation (f64 then f32, vs a true fma's single rounding), expected at</span>`);
+    write(`<span class="dim">a rate of ~2^-29 per operation.</span>`);
+  } else {
+    write(`<span class="warn">The GPU did NOT contract</span> — it matches the two-rounding reference.`);
+    write(`<span class="dim">Then a bit-exact node oracle is achievable for this kernel after all.</span>`);
+  }
+  write("");
+
+  // ---- the principled check ------------------------------------------------
+  // A tolerance of the form atol + rtol*|result| is the wrong instrument for a
+  // reduction: error accumulates against the partial sums, not the result, so
+  // cancellation near zero fails it no matter how correct the kernel is.
+  write("── error bound (the check that means something) ───");
+  const want = fmaWins ? wantFma : wantPlain;
+  const bound = withinErrorBound(gpu.out, want, absSum, K);
+  write(`K = ${K}   u = 2^-24   gamma_K = ${bound.gammaK.toExponential(3)}`);
+  write(`bound per element:  |gpu - cpu|  <=  gamma_K * SUM|a·b|`);
+  write("");
+  write(`violations   ${bound.violations} / ${gpu.out.length}`);
+  write(`worst ratio  ${f(bound.worstRatio, 4)}  <span class="dim">(observed / permitted; < 1 is inside the bound)</span>`);
+  if (bound.worstIndex >= 0) {
+    const r = Math.floor(bound.worstIndex / N), c = bound.worstIndex % N;
+    write(`  at c[${r}][${c}]   diff ${bound.worstDiff.toExponential(3)}   permitted ${bound.worstBound.toExponential(3)}`);
+  }
+  write("");
+
+  if (bound.ok) {
+    write(`<span class="ok">PASS</span>  every element is inside what f32 arithmetic permits,`);
+    write(`using ${(100 * bound.worstRatio).toFixed(2)}% of the error budget at worst.`);
+    write("");
+    write(`<span class="dim">For contrast, the naive rtol/atol test reports ${cmpFma.failures || cmpPlain.failures} failures — all of them</span>`);
+    write(`<span class="dim">near-zero outputs where relative error is meaningless. That test was the</span>`);
+    write(`<span class="dim">bug, not the kernel.</span>`);
+  } else {
+    write(`<span class="bad">FAIL</span>  ${bound.violations} elements exceed the theoretical bound.`);
+    write(`<span class="dim">This is not a tolerance question — the kernel is computing something</span>`);
+    write(`<span class="dim">floating point does not explain. Suspect the barriers or the As/Bs</span>`);
+    write(`<span class="dim">staging index arithmetic.</span>`);
+  }
+}
+</script>
+
+</body>
+</html>

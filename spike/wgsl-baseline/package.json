@@ -1,0 +1,11 @@
+{
+  "name": "tessera-spike-wgsl-baseline",
+  "private": true,
+  "type": "module",
+  "description": "Hand-written tiled WGSL matmul + f32-exact CPU oracle. The target artifact tessera must learn to emit.",
+  "scripts": {
+    "sim": "node sim.mjs",
+    "sim:full": "node sim.mjs --full",
+    "serve": "python3 -m http.server 8080"
+  }
+}

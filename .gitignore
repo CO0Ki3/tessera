@@ -1,0 +1,12 @@
+node_modules/
+.DS_Store
+*.log
+
+# tsc / build output
+out/
+dist/
+*.tsbuildinfo
+
+# MLIR + SPIR-V spike intermediates
+*.spv
+*.spvasm
