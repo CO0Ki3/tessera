@@ -17,7 +17,11 @@
  */
 
 import ts from "typescript";
-import { derive, type AxisIR, type BindingIR, type DTypeName, type KernelIR } from "./ir.ts";
+import {
+  derive, type AxisIR, type BindingIR, type DTypeName, type KernelIR, type PadName,
+} from "./ir.ts";
+
+const PAD_NAMES = ["zero", "one", "negInf", "posInf"] as const;
 
 export class FrontendError extends Error {
   constructor(message: string, readonly node?: ts.Node) {
@@ -154,7 +158,7 @@ function checkCanonicalBody(
   reduceAxes: readonly AxisIR[],
   bindings: readonly BindingIR[],
   raggedNames: ReadonlySet<string>,
-): { padded: Set<string> } {
+): { padded: Map<string, PadName> } {
   const body = call.arguments[1];
   if (!body || (!ts.isArrowFunction(body) && !ts.isFunctionExpression(body))) {
     fail(body ?? call, "kernel()'s second argument must be a function");
@@ -180,7 +184,7 @@ function checkCanonicalBody(
   ]);
 
   let forOf = 0, mma = 0, store = 0, zeros = 0;
-  const padded = new Set<string>();
+  const padded = new Map<string, PadName>();
 
   // Tokens (punctuation, keywords, identifiers, literals) carry no admission
   // decision of their own — the node that owns them is already constrained, and
@@ -228,13 +232,20 @@ function checkCanonicalBody(
         if (!owner || !bindings.some((b) => b.name === owner)) {
           fail(n, `.pad() must be called on a binding's tile, as <binding>.tile(...).pad(0)`);
         }
+        // The identity arrives as a named symbol (`zero`, `negInf`, ...), not a
+        // number: -Infinity has no literal type in TypeScript, so numbers cannot
+        // carry the identity a masked max needs. Which identity an operator
+        // ACCEPTS is enforced by the surface types; this only records which one
+        // was named, and rejects anything that is not one of them.
         const arg = n.arguments[0];
-        if (!arg || !ts.isNumericLiteral(arg) || arg.text !== "0") {
+        const named = arg && ts.isIdentifier(arg) ? arg.text : undefined;
+        if (!named || !(PAD_NAMES as readonly string[]).includes(named)) {
           fail(arg ?? n,
-            `.pad() takes the reduction's identity element, which for a sum is 0. ` +
-            `A non-annihilating pad silently corrupts ragged edges.`);
+            `.pad() takes a named identity element — one of ${PAD_NAMES.join(", ")} — ` +
+            `not a number. The identity for a masked max is negative infinity, which ` +
+            `TypeScript cannot express as a literal type.`);
         }
-        padded.add(owner);
+        padded.set(owner, named as PadName);
       }
     }
 
@@ -410,7 +421,16 @@ export function compileToIR(entryFile: string): KernelIR {
     }
   }
 
-  const pad = 0;
+  // Every padded binding in a kernel must name the same identity today: the IR
+  // carries one. Distinct identities per operand is a real thing (a fused
+  // max-and-sum pass wants both) and is where this goes next.
+  const names = new Set(padded.values());
+  if (names.size > 1) {
+    fail(specNode,
+      `this build supports one identity element per kernel, but ${names.size} were named ` +
+      `(${[...names].join(", ")}). Per-operand identities are not implemented.`);
+  }
+  const pad: PadName = (names.values().next().value ?? "zero") as PadName;
 
   return {
     name, dtype, tile, grid, reduce, bindings, maskedLoads, pad,

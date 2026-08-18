@@ -25,7 +25,7 @@
  * twelve-pass bisection.
  */
 
-import type { AxisIR, KernelIR } from "./ir.ts";
+import { PAD_LITERAL, type AxisIR, type KernelIR } from "./ir.ts";
 
 export function emitWGSL(k: KernelIR): string {
   const { bm, bn, bk } = k.tile;
@@ -38,6 +38,8 @@ export function emitWGSL(k: KernelIR): string {
   const [gm, gn] = k.grid;
   const rk = k.reduce[0];
   const ragged = (a: AxisIR) => a.fit === "ragged";
+  /** The masked-load fill, by name. `zero` is not the only possibility. */
+  const PAD = PAD_LITERAL[k.pad];
 
   const extent = new Map([...k.grid, ...k.reduce].map((a) => [a.name, a.extent]));
   const pick = (mode: "read" | "write", i: number) => k.bindings.filter((b) => b.mode === mode)[i];
@@ -52,7 +54,7 @@ export function emitWGSL(k: KernelIR): string {
   P(`//`);
   P(`//   ${k.name}: ${k.grid.map((x) => `${x.name}=${x.extent}`).join(" x ")} x ${rk.name}=${rk.extent}`);
   P(`//   tile ${bm}x${bn}x${bk}   workgroup ${wgx}x${wgy}x1   fragment ${tm}x${tn}`);
-  P(`//   ${k.maskedLoads.length ? `masked: ${k.maskedLoads.join(" ")}   pad ${k.pad}` : "no masks: every axis divides its block"}`);
+  P(`//   ${k.maskedLoads.length ? `masked: ${k.maskedLoads.join(" ")}   pad ${k.pad} (${PAD})` : "no masks: every axis divides its block"}`);
   P();
 
   // ---- bindings ------------------------------------------------------------
@@ -98,7 +100,7 @@ export function emitWGSL(k: KernelIR): string {
     ];
     // Clamp then select: branchless, and identical in meaning to what the MLIR
     // backend emits. A branch would diverge for exactly one block per row.
-    P(`As[i] = select(${k.pad}.0, ${a.name}[min(off, ${u(a.elements - 1)})], ${conds.join(" && ")});`, 3);
+    P(`As[i] = select(${PAD}, ${a.name}[min(off, ${u(a.elements - 1)})], ${conds.join(" && ")});`, 3);
   } else {
     P(`As[i] = ${a.name}[off];`, 3);
   }
@@ -116,7 +118,7 @@ export function emitWGSL(k: KernelIR): string {
       ...(ragged(rk) ? [`gr < ${u(rk.extent)}`] : []),
       ...(ragged(gn) ? [`gc < ${u(gn.extent)}`] : []),
     ];
-    P(`Bs[i] = select(${k.pad}.0, ${b.name}[min(off, ${u(b.elements - 1)})], ${conds.join(" && ")});`, 3);
+    P(`Bs[i] = select(${PAD}, ${b.name}[min(off, ${u(b.elements - 1)})], ${conds.join(" && ")});`, 3);
   } else {
     P(`Bs[i] = ${b.name}[off];`, 3);
   }

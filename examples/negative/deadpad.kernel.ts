@@ -2,7 +2,7 @@
 // note that `axis("m", 1024, T.bm)` passes `T.bm`, not a literal, so nothing
 // short of the checker knows the block is 64.
 
-import { axis, tiling, kernel, input, output, zeros, mma, relu, f32 } from "../../src/tessera";
+import { axis, tiling, kernel, input, output, zeros, mma, relu, f32, zero } from "../../src/tessera";
 
 const T = tiling(f32, 64, 64, 16);
 
@@ -25,7 +25,7 @@ export const matmulRelu = kernel(
   ({ a, b, c, at, reduce }) => {
     let acc = zeros(T.bm, T.bn, f32);
     for (const k of reduce.k) {
-      acc = mma(a.tile(at.m, k).pad(0), b.tile(k, at.n), acc);
+      acc = mma(a.tile(at.m, k).pad(zero), b.tile(k, at.n), acc);
     }
     c.tile(at.m, at.n).store(relu(acc));
   },

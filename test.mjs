@@ -132,7 +132,7 @@ if (!rag.ok) {
     bad(`dispatch is ${JSON.stringify(rm.dispatch)}, expected ${JSON.stringify(want)}`);
   }
   const expected = ["a:m", "a:k", "b:k", "b:n", "c:m", "c:n"];
-  if (JSON.stringify(rm.maskedLoads) === JSON.stringify(expected) && rm.pad === 0) {
+  if (JSON.stringify(rm.maskedLoads) === JSON.stringify(expected) && rm.pad === "zero") {
     ok(`manifest reports the masked pairs: ${rm.maskedLoads.join(" ")}`);
   } else {
     bad(`manifest maskedLoads = ${JSON.stringify(rm.maskedLoads)}, pad = ${rm.pad}`);

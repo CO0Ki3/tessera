@@ -125,13 +125,37 @@ export type IdxOf<A extends AnyAxis> = Idx<A["name"], A["extent"], A["block"]>;
 export interface Tile<
   S extends readonly [number, number],
   D extends DType,
-  Pad extends number | NeedsPad = 0,
+  Pad extends PadState = "exact",
 > {
   readonly __shape: S;
   readonly __dtype: D;
   readonly __pad: Pad;
   readonly __space: "workgroup";
 }
+
+/* ------------------------------------------------------------- identities */
+/**
+ * The identity element of a reduction, as a NAME rather than a number.
+ *
+ * Numbers cannot do this job. The identity for a masked max is negative
+ * infinity, and TypeScript has no literal type for it — `-Infinity` is unary
+ * minus applied to `Infinity`, so it widens to `number` and carries nothing.
+ * Naming the identities makes them expressible, and attaches the obligation to
+ * the OPERATOR: `mma` sums, so it demands the additive identity; a max demands
+ * the max identity. Passing the wrong one is then a type error for the same
+ * structural reason that a non-annihilating pad already was.
+ */
+export type PadName = "zero" | "one" | "negInf" | "posInf";
+
+/** `"exact"` means the axis divides its block, so nothing was ever masked. */
+export type PadState = "exact" | PadName | NeedsPad;
+
+export interface Identity<N extends PadName> { readonly __identity: N }
+
+export declare const zero: Identity<"zero">;
+export declare const one: Identity<"one">;
+export declare const negInf: Identity<"negInf">;
+export declare const posInf: Identity<"posInf">;
 
 /** The sentinel is a string so tsc PRINTS the instruction in the diagnostic. */
 export type NeedsPad =
@@ -145,7 +169,7 @@ export type NeedsPad =
 export interface RaggedTile<S extends readonly [number, number], D extends DType>
   extends Tile<S, D, NeedsPad> {
   /** Name only the identity element; tessera derives the mask from the extents. */
-  pad<const P extends number>(identity: P): Tile<S, D, P>;
+  pad<N extends PadName>(identity: Identity<N>): Tile<S, D, N>;
 }
 
 /** Register-resident accumulator, at TILE granularity. The compiler splits it
@@ -160,7 +184,7 @@ export interface Frag<S extends readonly [number, number], D extends DType> {
 export type TileOf<A0 extends AnyAxis, A1 extends AnyAxis, D extends DType> =
   "ragged" extends A0["fit"] | A1["fit"]
     ? RaggedTile<readonly [A0["block"], A1["block"]], D>
-    : Tile<readonly [A0["block"], A1["block"]], D, 0>;
+    : Tile<readonly [A0["block"], A1["block"]], D, "exact">;
 
 /* ---------------------------------------------------------------- bindings */
 
@@ -231,8 +255,8 @@ export declare function zeros<BM extends number, BN extends number, D extends DT
 export declare function mma<
   BM extends number, BK extends number, BN extends number, D extends DType,
 >(
-  a: Tile<readonly [BM, BK], D, 0>,
-  b: Tile<readonly [NoInfer<BK>, BN], NoInfer<D>, 0>,
+  a: Tile<readonly [BM, BK], D, "exact" | "zero">,
+  b: Tile<readonly [NoInfer<BK>, BN], NoInfer<D>, "exact" | "zero">,
   acc: Frag<readonly [NoInfer<BM>, NoInfer<BN>], NoInfer<D>>,
 ): Frag<readonly [BM, BN], D>;
 

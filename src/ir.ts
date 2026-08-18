@@ -9,6 +9,23 @@
 
 export type DTypeName = "f32" | "f16" | "i32";
 
+export type PadName = "zero" | "one" | "negInf" | "posInf";
+
+/**
+ * The literal a backend emits for an identity.
+ *
+ * WGSL has no infinity literal, so the infinities are the largest finite
+ * magnitudes instead. For the two uses that matter — annihilating a masked max,
+ * and mapping to 0 under exp — a value this large is indistinguishable from
+ * infinity in f32, and unlike a bitcast it survives every backend unchanged.
+ */
+export const PAD_LITERAL: Record<PadName, string> = {
+  zero: "0.0",
+  one: "1.0",
+  negInf: "-3.4028235e38",
+  posInf: "3.4028235e38",
+};
+
 export interface AxisIR {
   readonly name: string;
   readonly extent: number;
@@ -44,8 +61,14 @@ export interface KernelIR {
    * element; deciding WHERE masks go is the compiler's.
    */
   readonly maskedLoads: readonly string[];
-  /** The identity element for masked loads, from `.pad(x)`. Always 0 today. */
-  readonly pad: number;
+  /**
+   * The identity element for masked loads, by NAME.
+   *
+   * Not a number, because the identity for a masked max is negative infinity and
+   * TypeScript has no literal type for it. Naming it makes it expressible and
+   * ties the obligation to the reduction operator rather than to a value.
+   */
+  readonly pad: PadName;
 
   // ---- derived, folded once by the front end -------------------------------
   readonly workgroup: readonly [number, number, number];

@@ -20,7 +20,7 @@
  * sidesteps strided memrefs and subviews, where MemRefToSPIRV is least tolerant.
  */
 
-import type { AxisIR, KernelIR } from "./ir.ts";
+import { PAD_LITERAL, type AxisIR, type KernelIR } from "./ir.ts";
 
 const SC = "#spirv.storage_class<StorageBuffer>";
 const WG = "#spirv.storage_class<Workgroup>";
@@ -73,6 +73,8 @@ export function emitMLIR(k: KernelIR, opts: EmitOptions = {}): string {
 
   // ---- constants -----------------------------------------------------------
   const ragged = (a: AxisIR) => a.fit === "ragged";
+  /** The masked-load fill. Not the accumulator's zero — see the constants below. */
+  const PAD = k.pad === "zero" ? "%f0 " : "%fpad ";
   const anyRagged = [...k.grid, ...k.reduce].some(ragged);
 
   const needed = new Set<number>([
@@ -89,6 +91,11 @@ export function emitMLIR(k: KernelIR, opts: EmitOptions = {}): string {
   for (let i = 0; i < Math.max(tm, tn); i++) needed.add(i);   // fragment offsets
   for (const v of [...needed].sort((x, y) => x - y)) B(`%c${v} = arith.constant ${v} : index`);
   B(`%f0 = arith.constant 0.0 : ${ty}`);
+  // The accumulator's zero and the mask's identity are different constants, and
+  // conflating them was only invisible while every identity was zero.
+  if (anyRagged && k.pad !== "zero") {
+    B(`%fpad = arith.constant ${PAD_LITERAL[k.pad]} : ${ty}`);
+  }
   B();
 
   // ---- workgroup staging ---------------------------------------------------
@@ -133,7 +140,7 @@ export function emitMLIR(k: KernelIR, opts: EmitOptions = {}): string {
     B(conds.length === 2 ? `%ok = arith.andi %okr, %okc : i1` : `%ok = ${conds[0]} : i1`, 5);
     B(`%safe = arith.minui %off, %c${a.elements - 1} : index`, 5);
     B(`%raw = memref.load %${a.name}[%safe] : memref<${a.elements}x${ty}, ${SC}>`, 5);
-    B(`%val = arith.select %ok, %raw, %f0 : ${ty}`, 5);
+    B(`%val = arith.select %ok, %raw, ${PAD}: ${ty}`, 5);
   } else {
     B(`%val = memref.load %${a.name}[%off] : memref<${a.elements}x${ty}, ${SC}>`, 5);
   }
@@ -155,7 +162,7 @@ export function emitMLIR(k: KernelIR, opts: EmitOptions = {}): string {
     B(conds.length === 2 ? `%ok = arith.andi %okr, %okc : i1` : `%ok = ${conds[0]} : i1`, 5);
     B(`%safe = arith.minui %off, %c${b.elements - 1} : index`, 5);
     B(`%raw = memref.load %${b.name}[%safe] : memref<${b.elements}x${ty}, ${SC}>`, 5);
-    B(`%val = arith.select %ok, %raw, %f0 : ${ty}`, 5);
+    B(`%val = arith.select %ok, %raw, ${PAD}: ${ty}`, 5);
   } else {
     B(`%val = memref.load %${b.name}[%off] : memref<${b.elements}x${ty}, ${SC}>`, 5);
   }
