@@ -32,9 +32,36 @@ export type Schedule = "matmul" | "softmax";
 export const PAD_LITERAL: Record<PadName, string> = {
   zero: "0.0",
   one: "1.0",
-  negInf: "-3.4028235e38",
-  posInf: "3.4028235e38",
+  // The EXACT f32 maximum, (2 - 2^-23) * 2^127. The obvious-looking
+  // "3.4028235e38" is larger than it and does not round-trip, and Tint rejects
+  // it outright — "value ... cannot be represented as 'f32'". naga validated it
+  // without complaint, so the emitted WGSL passed every local check and only
+  // failed in the browser. See assertF32Literals below.
+  negInf: "-3.4028234663852886e38",
+  posInf: "3.4028234663852886e38",
 };
+
+/**
+ * Every float literal in emitted WGSL must survive a round trip through f32.
+ *
+ * naga does not check this — it accepted 57 occurrences of an out-of-range
+ * literal and reported "Validation successful", and the failure surfaced only as
+ * a shader compilation error in Chrome. So the check lives here, where it costs
+ * nothing and catches the whole class rather than the one instance.
+ */
+export function assertF32Literals(wgsl: string, where: string): void {
+  const bad: string[] = [];
+  for (const m of wgsl.matchAll(/-?\d+\.\d+(?:[eE][-+]?\d+)?/g)) {
+    const v = Number(m[0]);
+    if (!Number.isFinite(v)) continue;
+    if (!Number.isFinite(Math.fround(v)) || Math.fround(v) !== v) bad.push(m[0]);
+  }
+  if (bad.length) {
+    throw new Error(
+      `${where}: ${bad.length} float literal(s) do not round-trip through f32, ` +
+      `which Tint rejects even though naga does not: ${[...new Set(bad)].slice(0, 3).join(", ")}`);
+  }
+}
 
 export interface AxisIR {
   readonly name: string;

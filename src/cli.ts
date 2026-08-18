@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { compileToIR, FrontendError } from "./frontend.ts";
 import { emitMLIR } from "./emit-mlir.ts";
 import { emitWGSL } from "./emit-wgsl.ts";
+import { assertF32Literals } from "./ir.ts";
 import type { KernelIR } from "./ir.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -97,6 +98,7 @@ function main(): void {
   if (!args.includes("--backend=mlir")) {
     console.log(`\n── emit (direct WGSL, no MLIR) ────────────────────`);
     const wgslDirect = emitWGSL(ir);
+    assertF32Literals(wgslDirect, `${ir.name} (direct WGSL)`);
     writeFileSync(at(".wgsl"), wgslDirect);
     console.log(`  ${at(".wgsl")}  ${wgslDirect.split("\n").length} lines`);
 

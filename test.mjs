@@ -167,6 +167,14 @@ for (const [entry, label, wantMasks] of [
   } catch (e) {
     bad(`${label}: naga rejected the direct output\n${e.stdout ?? e.message}`);
   }
+  // naga is not sufficient on its own: it accepted 57 occurrences of a float
+  // literal larger than f32::MAX and reported success, and the shader then failed
+  // to compile in Chrome. Tint is stricter, so this checks what naga does not.
+  const outOfRange = [...wgsl.matchAll(/-?\d+\.\d+(?:[eE][-+]?\d+)?/g)]
+    .map((m) => m[0])
+    .filter((t) => { const v = Number(t); return Number.isFinite(v) && Math.fround(v) !== v; });
+  if (outOfRange.length === 0) ok(`${label}: every float literal round-trips through f32`);
+  else bad(`${label}: ${outOfRange.length} literal(s) Tint will reject: ${[...new Set(outOfRange)].slice(0,2).join(", ")}`);
   if (wantMasks ? bounds > 0 : bounds === 0) {
     ok(`${label}: masks exactly where raggedness is`);
   } else {

@@ -2,7 +2,7 @@
 //
 //   softmax_f32: m=1024 x n=750
 //   schedule softmax   workgroup 16x16x1   fragment 4x4
-//   masked: x:n y:n   pad negInf (-3.4028235e38)
+//   masked: x:n y:n   pad negInf (-3.4028234663852886e38)
 
 @group(0) @binding(0) var<storage, read> x : array<f32>;
 @group(0) @binding(1) var<storage, read_write> y : array<f32>;
@@ -18,121 +18,121 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
   let rowBase = blockRow * 64u;
 
   var mx : array<f32, 4>;
-  mx[0] = -3.4028235e38;
-  mx[1] = -3.4028235e38;
-  mx[2] = -3.4028235e38;
-  mx[3] = -3.4028235e38;
+  mx[0] = -3.4028234663852886e38;
+  mx[1] = -3.4028234663852886e38;
+  mx[2] = -3.4028234663852886e38;
+  mx[3] = -3.4028234663852886e38;
   for (var nn : u32 = 0u; nn < 750u; nn = nn + 64u) {
     {
       let row = rowBase + ty * 4u + 0u;
       let col = nn + tx * 4u + 0u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[0] = max(mx[0], v);
     }
     {
       let row = rowBase + ty * 4u + 0u;
       let col = nn + tx * 4u + 1u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[0] = max(mx[0], v);
     }
     {
       let row = rowBase + ty * 4u + 0u;
       let col = nn + tx * 4u + 2u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[0] = max(mx[0], v);
     }
     {
       let row = rowBase + ty * 4u + 0u;
       let col = nn + tx * 4u + 3u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[0] = max(mx[0], v);
     }
     {
       let row = rowBase + ty * 4u + 1u;
       let col = nn + tx * 4u + 0u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[1] = max(mx[1], v);
     }
     {
       let row = rowBase + ty * 4u + 1u;
       let col = nn + tx * 4u + 1u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[1] = max(mx[1], v);
     }
     {
       let row = rowBase + ty * 4u + 1u;
       let col = nn + tx * 4u + 2u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[1] = max(mx[1], v);
     }
     {
       let row = rowBase + ty * 4u + 1u;
       let col = nn + tx * 4u + 3u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[1] = max(mx[1], v);
     }
     {
       let row = rowBase + ty * 4u + 2u;
       let col = nn + tx * 4u + 0u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[2] = max(mx[2], v);
     }
     {
       let row = rowBase + ty * 4u + 2u;
       let col = nn + tx * 4u + 1u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[2] = max(mx[2], v);
     }
     {
       let row = rowBase + ty * 4u + 2u;
       let col = nn + tx * 4u + 2u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[2] = max(mx[2], v);
     }
     {
       let row = rowBase + ty * 4u + 2u;
       let col = nn + tx * 4u + 3u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[2] = max(mx[2], v);
     }
     {
       let row = rowBase + ty * 4u + 3u;
       let col = nn + tx * 4u + 0u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[3] = max(mx[3], v);
     }
     {
       let row = rowBase + ty * 4u + 3u;
       let col = nn + tx * 4u + 1u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[3] = max(mx[3], v);
     }
     {
       let row = rowBase + ty * 4u + 3u;
       let col = nn + tx * 4u + 2u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[3] = max(mx[3], v);
     }
     {
       let row = rowBase + ty * 4u + 3u;
       let col = nn + tx * 4u + 3u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       mx[3] = max(mx[3], v);
     }
   }
@@ -142,28 +142,28 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
   scratch[(ty * 4u + 3u) * 16u + tx] = mx[3];
   workgroupBarrier();
   {
-    var r = -3.4028235e38;
+    var r = -3.4028234663852886e38;
     for (var j : u32 = 0u; j < 16u; j = j + 1u) {
       r = max(r, scratch[(ty * 4u + 0u) * 16u + j]);
     }
     mx[0] = r;
   }
   {
-    var r = -3.4028235e38;
+    var r = -3.4028234663852886e38;
     for (var j : u32 = 0u; j < 16u; j = j + 1u) {
       r = max(r, scratch[(ty * 4u + 1u) * 16u + j]);
     }
     mx[1] = r;
   }
   {
-    var r = -3.4028235e38;
+    var r = -3.4028234663852886e38;
     for (var j : u32 = 0u; j < 16u; j = j + 1u) {
       r = max(r, scratch[(ty * 4u + 2u) * 16u + j]);
     }
     mx[2] = r;
   }
   {
-    var r = -3.4028235e38;
+    var r = -3.4028234663852886e38;
     for (var j : u32 = 0u; j < 16u; j = j + 1u) {
       r = max(r, scratch[(ty * 4u + 3u) * 16u + j]);
     }
@@ -180,112 +180,112 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 0u;
       let col = nn + tx * 4u + 0u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[0] = sm[0] + exp(v - mx[0]);
     }
     {
       let row = rowBase + ty * 4u + 0u;
       let col = nn + tx * 4u + 1u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[0] = sm[0] + exp(v - mx[0]);
     }
     {
       let row = rowBase + ty * 4u + 0u;
       let col = nn + tx * 4u + 2u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[0] = sm[0] + exp(v - mx[0]);
     }
     {
       let row = rowBase + ty * 4u + 0u;
       let col = nn + tx * 4u + 3u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[0] = sm[0] + exp(v - mx[0]);
     }
     {
       let row = rowBase + ty * 4u + 1u;
       let col = nn + tx * 4u + 0u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[1] = sm[1] + exp(v - mx[1]);
     }
     {
       let row = rowBase + ty * 4u + 1u;
       let col = nn + tx * 4u + 1u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[1] = sm[1] + exp(v - mx[1]);
     }
     {
       let row = rowBase + ty * 4u + 1u;
       let col = nn + tx * 4u + 2u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[1] = sm[1] + exp(v - mx[1]);
     }
     {
       let row = rowBase + ty * 4u + 1u;
       let col = nn + tx * 4u + 3u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[1] = sm[1] + exp(v - mx[1]);
     }
     {
       let row = rowBase + ty * 4u + 2u;
       let col = nn + tx * 4u + 0u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[2] = sm[2] + exp(v - mx[2]);
     }
     {
       let row = rowBase + ty * 4u + 2u;
       let col = nn + tx * 4u + 1u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[2] = sm[2] + exp(v - mx[2]);
     }
     {
       let row = rowBase + ty * 4u + 2u;
       let col = nn + tx * 4u + 2u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[2] = sm[2] + exp(v - mx[2]);
     }
     {
       let row = rowBase + ty * 4u + 2u;
       let col = nn + tx * 4u + 3u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[2] = sm[2] + exp(v - mx[2]);
     }
     {
       let row = rowBase + ty * 4u + 3u;
       let col = nn + tx * 4u + 0u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[3] = sm[3] + exp(v - mx[3]);
     }
     {
       let row = rowBase + ty * 4u + 3u;
       let col = nn + tx * 4u + 1u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[3] = sm[3] + exp(v - mx[3]);
     }
     {
       let row = rowBase + ty * 4u + 3u;
       let col = nn + tx * 4u + 2u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[3] = sm[3] + exp(v - mx[3]);
     }
     {
       let row = rowBase + ty * 4u + 3u;
       let col = nn + tx * 4u + 3u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       sm[3] = sm[3] + exp(v - mx[3]);
     }
   }
@@ -328,7 +328,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 0u;
       let col = nn + tx * 4u + 0u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[0]) / sm[0];
       }
@@ -337,7 +337,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 0u;
       let col = nn + tx * 4u + 1u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[0]) / sm[0];
       }
@@ -346,7 +346,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 0u;
       let col = nn + tx * 4u + 2u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[0]) / sm[0];
       }
@@ -355,7 +355,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 0u;
       let col = nn + tx * 4u + 3u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[0]) / sm[0];
       }
@@ -364,7 +364,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 1u;
       let col = nn + tx * 4u + 0u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[1]) / sm[1];
       }
@@ -373,7 +373,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 1u;
       let col = nn + tx * 4u + 1u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[1]) / sm[1];
       }
@@ -382,7 +382,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 1u;
       let col = nn + tx * 4u + 2u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[1]) / sm[1];
       }
@@ -391,7 +391,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 1u;
       let col = nn + tx * 4u + 3u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[1]) / sm[1];
       }
@@ -400,7 +400,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 2u;
       let col = nn + tx * 4u + 0u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[2]) / sm[2];
       }
@@ -409,7 +409,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 2u;
       let col = nn + tx * 4u + 1u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[2]) / sm[2];
       }
@@ -418,7 +418,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 2u;
       let col = nn + tx * 4u + 2u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[2]) / sm[2];
       }
@@ -427,7 +427,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 2u;
       let col = nn + tx * 4u + 3u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[2]) / sm[2];
       }
@@ -436,7 +436,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 3u;
       let col = nn + tx * 4u + 0u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[3]) / sm[3];
       }
@@ -445,7 +445,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 3u;
       let col = nn + tx * 4u + 1u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[3]) / sm[3];
       }
@@ -454,7 +454,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 3u;
       let col = nn + tx * 4u + 2u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[3]) / sm[3];
       }
@@ -463,7 +463,7 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       let row = rowBase + ty * 4u + 3u;
       let col = nn + tx * 4u + 3u;
       let off = row * 750u + col;
-      let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+      let v = select(-3.4028234663852886e38, x[min(off, 767999u)], col < 750u);
       if (col < 750u) {
         y[row * 750u + col] = exp(v - mx[3]) / sm[3];
       }
