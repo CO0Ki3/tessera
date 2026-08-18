@@ -1,132 +1,83 @@
-# TypeGPU: published ESM is not loadable by a browser (`process.env` at module top level)
+# NOT AN ISSUE — TypeGPU's `process.env` read is by design
 
-- **Repo**: [software-mansion/TypeGPU](https://github.com/software-mansion/TypeGPU)
-- **Affects**: 0.12.0 (also the latest published version, checked 0.12.0)
-- **Duplicate check**: no matching issue — `is:issue process.env` returns no results
-- **Status**: ready to file, not yet filed
-- **In tessera**: worked around in `spike/wgsl-baseline/vendor.mjs`, guarded by `npm test`
+**Verdict: do not file.** This was written up as an upstream defect and it is not
+one. Kept because the reasoning cost two browser runs and a false start, and
+because the retraction is the useful part.
 
-Everything between the markers below is the issue body, verbatim. The section
-after it is ours and does not belong upstream.
+## The claim that was going to be filed
 
-<!-- ─────────────────── BEGIN ISSUE BODY ─────────────────── -->
-
-### Summary
-
-`shared/env.js` reads `process.env` at module top level, so the published ESM
-throws `ReferenceError: process is not defined` when loaded directly in a
-browser. Because `env.js` is imported by `errors.js`, this takes down the whole
-module graph — nothing loads.
+`typegpu@0.12.0`'s `shared/env.js` reads `process.env.NODE_ENV` at module top
+level:
 
 ```js
-// shared/env.js
 export const DEV = process.env.NODE_ENV === 'development';
 export const TEST = process.env.NODE_ENV === 'test';
 ```
 
-The file's comment states the assumption:
+`env.js` is imported by `errors.js`, so it is in everything. Serving the package
+directory over a plain HTTP server and loading `index.js` from a browser fails
+with `ReferenceError: process is not defined`, taking the whole 166-module graph
+with it. The draft issue argued that `"exports": { ".": "./index.js" }` with no
+`browser` condition made that a broken promise.
 
-> Even though the value of this constant uses Node.js specific APIs, pretty much
-> every bundler replaces the expression below with either `development` or
-> `production`
+## Why it is wrong
 
-That holds for the documented setups. It also means the package as published is
-not loadable by the runtime it targets, while `package.json` advertises
+**The premise was that TypeGPU intends its published ESM to be served raw to a
+browser. It does not, and nothing ever said it did.**
 
-```json
-"exports": { ".": "./index.js", "./data": "./data/index.js", ... }
-```
+- The [getting-started docs](https://docs.swmansion.com/TypeGPU/getting-started)
+  document exactly two paths, the CLI and a manual npm install, both ending in a
+  build step. No CDN link, no `<script type="module">`, no import map, no
+  unbundled usage anywhere.
+- The headline feature — writing shaders in TypeScript — *requires* a build
+  plugin: *"TypeGPU features related to writing shaders in JavaScript/TypeScript
+  rely on an additional build tool that hooks into existing bundlers called
+  unplugin-typegpu"*. A bundler is not an implementation detail of the
+  recommended setup; it is the setup.
+- `package.json` carries `engines: { node: ">=12.20.0" }` and no `browser`,
+  `unpkg`, or `jsdelivr` field, and the tarball ships no UMD/IIFE/minified
+  bundle. Every signal says "consumed by a build tool".
+- **And the no-bundler path works.** esm.sh serves a transformed build with
+  `process.env` substituted — 0 occurrences — and no bare specifiers:
 
-with no `browser` condition and no bundled build. A consumer reading that has
-every reason to expect `./index.js` to be a loadable ES module.
+  ```
+  $ curl -sL https://esm.sh/typegpu@0.12.0/es2022/common.mjs | grep -c process.env
+  0
+  ```
 
-### Why this is easy to miss
+  A transforming CDN is the ecosystem's answer for "no bundler", and it is
+  already answered.
 
-**It is invisible from Node.** `await import('typegpu')` in a Node script
-succeeds, because Node has `process`. A test suite or CI job that imports the
-package passes while direct browser loading is broken.
+`process.env.NODE_ENV` guarded by dead-code elimination is a long-standing
+convention — React ships the same thing. Filing it as a defect would be reporting
+a package for following a convention, against a use case its documentation never
+offers.
 
-### Reproduction
+## What was actually true, and still is
 
-TypeGPU's three runtime dependencies have to be resolved first or the page fails
-on those instead, so the import map below covers them. With that in place,
-`process` is the only thing left:
+Nothing about TypeGPU. Two facts about **our** harness:
 
-```sh
-npm i typegpu@0.12.0
-mkdir -p www
-for p in typegpu tsover-runtime typed-binary tinyest; do cp -R node_modules/$p www/$p; done
-cat > www/index.html <<'HTML'
-<script type="importmap">{"imports":{
-  "typegpu":        "./typegpu/index.js",
-  "tsover-runtime": "./tsover-runtime/dist/index.js",
-  "typed-binary":   "./typed-binary/dist/index.js",
-  "tinyest":        "./tinyest/index.js"
-}}</script>
-<script type="module">import tgpu from "typegpu"; console.log(tgpu);</script>
-HTML
-python3 -m http.server -d www 8080
-```
+1. It is served by `python3 -m http.server` rooted at `spike/wgsl-baseline/`,
+   with no build step, because a compiler's test harness should not need one.
+2. That is an unsupported way to consume TypeGPU, so we do the transform
+   ourselves in `vendor.mjs`.
 
-Open `http://localhost:8080/`:
+Vendoring is a *choice* — esm.sh would also work and needs no script — made
+because a local harness that requires the network to run its own kernels is
+worse than one that does not. The framing "we work around an upstream defect" was
+wrong; the framing is "we consume it in an unsupported way on purpose, and pay
+for that ourselves".
 
-```
-Uncaught ReferenceError: process is not defined
-    at typegpu/shared/env.js:9
-```
+## The lesson worth keeping
 
-Contrast with `node -e "import('typegpu').then(m => console.log(!!m.default))"`,
-which prints `true`.
+The defect report was three sections of verified detail — reproduction, boundary,
+scope, suggested one-line fix — built on a premise nobody had checked: *does this
+project intend to support the thing I am doing?* Everything downstream of that
+was correct and irrelevant.
 
-### Scope
-
-This is only about `process.env`. Shipping bare specifiers for real dependencies
-is normal, and resolving them is the consumer's job — the import map above is not
-a complaint. The `process.env` read is different in kind, because it fails **even
-with** a correct import map: there is no `process` to read.
-
-### Suggested fix
-
-Guarding the read is one line, changes nothing under any bundler (the expression
-still folds), and makes the published `exports` entries honest:
-
-```js
-const env = typeof process !== 'undefined' ? process.env : {};
-export const DEV = env.NODE_ENV === 'development';
-export const TEST = env.NODE_ENV === 'test';
-```
-
-Alternatives, if preferred: ship a `browser` condition in `exports` pointing at a
-variant with the constants inlined to `false`, or document that a bundler is
-required and that the `exports` entries are not directly loadable.
-
-Happy to open a PR for the one-line version if that is welcome.
-
-<!-- ──────────────────── END ISSUE BODY ───────────────────── -->
-
-## Not part of the issue — what tessera does about it
-
-`spike/wgsl-baseline/vendor.mjs` performs the substitution a bundler would
-(`DEV = false`, `TEST = false`) and rewrites the three bare specifiers to
-relative paths, so the vendored tree loads from a plain `python3 -m http.server`
-with no bundler and no import map.
-
-It then refuses to trust itself. It rescans the tree for any remaining
-`process.` / `require(` / `node:` / `__dirname` reference and walks the module
-graph the browser will fetch. `vendor.mjs --check` runs both against an existing
-tree and is wired into `npm test`, so a TypeGPU upgrade that reintroduces either
-problem fails there rather than in a browser console.
-
-Every guard was falsified before being trusted, including the scanner itself:
-
-| perturbation | caught by |
-|---|---|
-| restore `from 'tsover-runtime'` (single quotes) | bare-specifier scan |
-| restore `process.env.NODE_ENV` | host-only scan |
-| delete a reachable leaf module | module-graph walk |
-| break the scanner to double-quotes-only | **positive control** |
-
-The positive control exists because the first version of this check reported
-"0 bare imports" from a grep that only matched double quotes, while TypeGPU
-writes `from 'tsover-runtime'`. A check that returns zero is worthless until it
-has been shown capable of returning non-zero.
+The question that caught it was "typegpu가 실제로 돌리는 환경이 맞는지 확인해줄래,
+애초에 의도하지 않은 걸 수도 있잖아" — asked before filing, not after. Check the
+premise before the details, because the details cannot fail in a way that reveals
+a wrong premise. Compare `naga-f32-literal-range.md`, where the equivalent
+question — which behaviour does the spec mandate — could not be answered, so the
+issue asks it instead of assuming.
