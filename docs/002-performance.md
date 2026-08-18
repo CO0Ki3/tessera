@@ -72,6 +72,32 @@ assumed: every sample the harness has ever produced is an exact multiple. Two
 kernels are only distinguishable if they are several quanta apart, which is why
 results are quoted in quanta rather than milliseconds.
 
+## 2a. The instrument's floor, measured rather than assumed
+
+The quantum is 65.536 µs, so two kernels are only distinguishable several quanta
+apart. That was an inference from the quantisation. It is now a measurement.
+
+The TypeGPU adapter (`docs/005`) runs **byte-identical WGSL** with the same
+manifest and the same dispatch, through the same `createDispatcher`, differing
+only in who allocated the buffers. Interleaved against the raw runner it reported:
+
+```
+tessera direct, raw resources      7q
+tessera direct, TypeGPU resources  6q     the same shader
+```
+
+Identical work, measured twice, one quantum apart. Nothing in the second path can
+make a kernel faster — a buffer allocator is not in the timed region — so this is
+the floor of the instrument, directly observed.
+
+**Consequence for every table in this document:** a one-quantum difference is not
+a result. The harness now refuses to print a ratio for one, saying
+`indistinguishable` instead, because `0.86x` for the run above invited exactly
+the reading that produced the retracted 1.5× claim in §2.
+
+The comparisons that survive this are the ones that were never close: the MLIR
+chain at 11q against 6–7q, the naga round-trip at 13q, unrolling at 15q.
+
 ## 3. What has been ruled out
 
 Three hypotheses, each probed, all refuted. Recorded so nobody re-runs them.
@@ -221,8 +247,12 @@ computing `stage_a[(ty * 4u + i) * 16u + (t_ci - t_cb)]` per element, where
 `t_ci - t_cb` cancels by construction and the leading term is loop-invariant.
 So one emitter that derives its schedule now matches what two written by hand
 achieved, and the derivation is free. Correctness is unchanged throughout
-(786432/786432 bit-identical). Reproduced most recently at 6q direct against 6q
-hand-written — 1.00x, the two indistinguishable.
+(786432/786432 bit-identical).
+
+Across three sessions both columns sit at 6–7q and are never more than one
+quantum apart — hand `6, 7, 6`, direct `6, 6, 7` — which by §2a means the two are
+indistinguishable, not that either leads. Quoting a single session's ratio here
+would be quoting the instrument.
 
 **The instructive part is the contrast with probe B.** The same class of tidying —
 removing redundant index arithmetic — was worth nothing through one backend and

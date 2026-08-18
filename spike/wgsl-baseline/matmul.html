@@ -259,6 +259,27 @@ async function main() {
   write("");
 
   const q = (k) => stats.get(k)?.minQ ?? null;
+
+  /**
+   * A ratio this harness cannot resolve should not be printed as a ratio.
+   *
+   * Chrome quantises timestamp-query results to 65.536 us, so 6q against 7q is a
+   * rounding boundary, not a result. This run made that concrete rather than
+   * theoretical: the SAME WGSL, with the same dispatch and the same timed code,
+   * measured 7q through the raw resource layer and 6q through TypeGPU's. Nothing
+   * about the kernel differed, so one quantum is simply the instrument's floor.
+   *
+   * Printed as "0.86x" that reads as a speedup from a layer that cannot produce
+   * one, which is how the earlier retracted 1.5x claim got written down. So a
+   * difference of one quantum or less says so instead.
+   */
+  const cmp = (aKey, bKey) => {
+    const a = q(aKey), b = q(bKey);
+    if (!a || !b) return null;
+    return { a, b, resolvable: Math.abs(a - b) > 1, text: Math.abs(a - b) > 1
+      ? `${f(a / b, 2)}x`
+      : `<span class="dim">indistinguishable</span>` };
+  };
   write(`  ${"kernel".padEnd(34)}  ${"min".padStart(5)} ${"med".padStart(5)} ${"max".padStart(5)}   spread   GFLOP/s`);
   for (const { v } of runners) {
     const st = stats.get(v.key);
@@ -304,22 +325,23 @@ async function main() {
   }
   if (q("typegpu") && q("direct")) {
     const dq = q("typegpu") - q("direct");
-    write(`TypeGPU resource layer costs   ${f(q("typegpu") / q("direct"), 2)}x   ` +
+    write(`TypeGPU resource layer costs   ${cmp("typegpu", "direct").text}   ` +
           `<span class="dim">(${q("direct")}q \u2192 ${q("typegpu")}q, ${dq >= 0 ? "+" : ""}${dq}q)</span>`);
     write(Math.abs(dq) <= 1
-      ? `  <span class="ok">free</span> \u2014 same WGSL, same dispatch, same timed code; the ` +
-        `resources are just allocated by a typed layer instead of by hand.`
+      ? `  <span class="ok">free</span> \u2014 same WGSL, same dispatch, same timed code, so the ` +
+        `\u00b11q\n  is the instrument, not the layer. The resources are simply allocated by a ` +
+        `typed\n  layer instead of by hand.`
       : `  <span class="warn">not free</span> \u2014 investigate before adopting it; nothing in ` +
         `the timed path differs, so this would be allocation or binding.`);
     write("");
   }
   if (q("mlirNoOpt") && q("mlir")) {
     const d = q("mlirNoOpt") - q("mlir");
-    write(`canonicalize+cse+licm bought   ${f(q("mlirNoOpt") / q("mlir"), 2)}x   ` +
+    write(`canonicalize+cse+licm bought   ${cmp("mlirNoOpt", "mlir").text}   ` +
           `<span class="dim">(${q("mlirNoOpt")}q → ${q("mlir")}q, ${d >= 0 ? "+" : ""}${d}q)</span>`);
   }
   if (q("mlirUnroll") && q("mlir")) {
-    write(`unrolling the k loop bought    ${f(q("mlir") / q("mlirUnroll"), 2)}x   ` +
+    write(`unrolling the k loop bought    ${cmp("mlir", "mlirUnroll").text}   ` +
           `<span class="dim">(${q("mlir")}q → ${q("mlirUnroll")}q)</span>`);
     if (q("hand")) {
       write(`  unrolled vs hand-written     ${f(q("mlirUnroll") / q("hand"), 2)}x`);
@@ -327,7 +349,7 @@ async function main() {
   }
   if (q("roundtrip") && q("direct")) {
     write("");
-    write(`naga round-trip cost           ${f(q("roundtrip") / q("direct"), 2)}x   ` +
+    write(`naga round-trip cost           ${cmp("roundtrip", "direct").text}   ` +
           `<span class="dim">(${q("direct")}q → ${q("roundtrip")}q; gains loop{}/continuing{}, ` +
           `no phi, no bitcast)</span>`);
     if (q("roundtrip") <= q("direct") + 1) {
@@ -342,10 +364,10 @@ async function main() {
     }
   }
   if (q("hand") && q("handRW")) {
-    write(`hand: read → read_write        ${f(q("handRW") / q("hand"), 2)}x`);
+    write(`hand: read → read_write        ${cmp("handRW", "hand").text}`);
   }
   if (q("mlir") && q("mlirRO")) {
-    write(`tessera: read_write → read     ${f(q("mlirRO") / q("mlir"), 2)}x`);
+    write(`tessera: read_write → read     ${cmp("mlirRO", "mlir").text}`);
   }
   write("");
 

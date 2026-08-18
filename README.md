@@ -119,7 +119,7 @@ Full accounting, including what three research passes could not look at and why,
 | `examples/matmul-ragged.kernel.ts` | 1000x750x500, no axis dividing its block, 750000/750000 bit-exact |
 | `examples/softmax.kernel.ts` | a second kernel family, 1024x750 with a ragged reduction axis, every row normalised and within 6 ULP |
 | backends | direct WGSL (default) and MLIR (`--backend=mlir`), bit-identical to each other |
-| `spike/wgsl-baseline/typegpu-runner.js` | the same kernels with TypeGPU owning the resources, sharing the raw runner's timed path verbatim |
+| `spike/wgsl-baseline/typegpu-runner.js` | the same kernel with TypeGPU owning buffers, layout, bind group and readback — bit-identical output, and free, sharing the raw runner's timed path verbatim |
 | `npm test` | MLIR byte-identity against a verified reference, 7 rejected negatives, mask placement, direct-backend validity, manifest↔WGSL↔TypeGPU layout agreement |
 
 The second kernel family was written to answer one question, with the criteria fixed in

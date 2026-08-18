@@ -1,8 +1,8 @@
 # 005 — The runtime: what TypeGPU absorbs, and what it structurally cannot
 
 Status: **adapter built and statically verified; the first browser run found an
-upstream blocker and a bundler assumption, both worked around; the timing
-number is pending a re-run.**
+upstream blocker and a bundler assumption, both worked around; the resource
+layer measured free and bit-identical.**
 Code: `spike/wgsl-baseline/typegpu-runner.js`, `vendor.mjs`,
 `check-typegpu-layout.mjs`.
 
@@ -193,19 +193,47 @@ than one that says it does not know, so the error is now kept and printed
 verbatim. The second failure was diagnosed from the page in one reading;
 the first cost a round trip.
 
-## 7. Measuring it honestly
+## 7. RESOLVED — the resource layer is free, and the output is identical
 
 `once()` is **not** reimplemented in the adapter. Both runners call
 `createDispatcher` from `measure.js`, which owns the query set and the compute
 pass, so the timed path is the same code and the only difference between the two
-variants is who allocated the resources. `matmul.html` runs
-`tessera direct, TypeGPU resources` against `tessera direct` on the same WGSL,
-the same manifest and the same dispatch, interleaved, and checks the outputs are
-bit-identical.
+variants is who allocated the resources.
 
-The expected result is *no difference* — a resource layer that costs quanta
-would be a finding worth chasing before adopting it. The number goes here once
-the harness has been run.
+Measured on the same WGSL, the same manifest and the same dispatch, interleaved
+round-robin, 8 warm-up + 25 timed:
+
+```
+tessera direct, raw resources            7q     1755 GFLOP/s
+tessera direct, TypeGPU resources        6q     2048 GFLOP/s
+hand-written                             6q     2048 GFLOP/s
+
+TypeGPU resources vs raw   bit-exact 786432 / 786432   IDENTICAL
+```
+
+**The layer costs nothing.** It cannot: the WGSL is byte-identical, the dispatch
+comes from the same manifest, and the timed code is the same function. The ±1q is
+the instrument.
+
+That is worth stating carefully, because the harness first printed it as
+`0.86x` — which reads as TypeGPU making the kernel *faster*, a thing a buffer
+allocator cannot do. Chrome quantises timestamps to 65.536 µs, so 6q against 7q
+is a rounding boundary rather than a result. The page no longer prints a ratio it
+cannot resolve; a difference of one quantum or less now says `indistinguishable`.
+This is the same failure mode as the retracted 1.5× claim in
+[`docs/002`](002-performance.md) §2, caught earlier this time.
+
+The bit-identity is the load-bearing check. It confirms the adapter binds
+`a`, `b` and `c` to the same buffers in the same order as the raw path — which is
+exactly the thing `check-typegpu-layout.mjs` verifies statically, now confirmed
+dynamically on real data.
+
+### The unplanned control this produced
+
+Running the identical shader through two resource layers is, incidentally, a
+direct measurement of the harness's own resolution: **identical work, measured
+twice, differs by one quantum.** Every other comparison on the page should be
+read against that floor. Recorded in `docs/002` §2a.
 
 ## 8. What this does not settle
 
