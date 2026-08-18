@@ -148,6 +148,7 @@ console.log("\ndirect WGSL backend (the default)");
 for (const [entry, label, wantMasks] of [
   ["examples/matmul.kernel.ts", "aligned", false],
   ["examples/matmul-ragged.kernel.ts", "ragged", true],
+  ["examples/softmax.kernel.ts", "softmax", true],
 ]) {
   let r;
   try {
@@ -155,7 +156,8 @@ for (const [entry, label, wantMasks] of [
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   } catch (e) { bad(`${label}: ${(e.stdout ?? "") + (e.stderr ?? "")}`); continue; }
 
-  const name = label === "ragged" ? "matmul_relu_ragged" : "matmul_relu_f32";
+  const name = label === "ragged" ? "matmul_relu_ragged"
+             : label === "softmax" ? "softmax_f32" : "matmul_relu_f32";
   const wgsl = readFileSync(join(out, `${name}.wgsl`), "utf8");
   const bounds = (wgsl.match(/< \d+u\)/g) ?? []).length;
 
@@ -176,6 +178,35 @@ for (const [entry, label, wantMasks] of [
     ok(`${label}: entry point is spec.name — nothing in this path renames it`);
   } else {
     bad(`${label}: manifest backend=${man.backend} entryPoint=${man.entryPoint} name=${man.name}`);
+  }
+}
+
+// ---- 2d. the softmax emitter contains no masking of its own ----------------
+// The claim under test in docs/004: a second schedule reuses the access layer
+// rather than re-deriving where masks go. Measured on the source, not asserted.
+console.log("\nsecond schedule");
+{
+  const src = readFileSync("src/emit-wgsl.ts", "utf8");
+  const soft = src.slice(src.indexOf("function emitSoftmax"), src.indexOf("// ---- bindings"));
+  const body = soft.length > 0 ? soft : src;
+  // The MASKING primitives specifically. A loop bound is not a mask: the softmax
+  // schedule legitimately writes `nn < <reduce extent>` to know how far to
+  // iterate, and an earlier version of this check flagged those, which would
+  // have been a false positive rather than a finding. What must be absent is the
+  // machinery that decides WHERE a guard goes and what it compares against:
+  // select/min (the clamp-and-select load), and any call to guards() or ragged().
+  const hits = ["select(", "min(", "ragged(", "guards("]
+    .map((k) => [k, body.split(k).length - 1]);
+  const total = hits.reduce((n, [, c]) => n + c, 0);
+  if (soft.length === 0) {
+    bad("could not locate emitSoftmax in emit-wgsl.ts");
+  } else if (total === 0) {
+    ok(`the softmax schedule contains no masking or indexing logic ` +
+       `(${(soft.match(/emitLoad\(/g) ?? []).length} emitLoad, ` +
+       `${(soft.match(/emitStore\(/g) ?? []).length} emitStore)`);
+  } else {
+    bad(`the softmax schedule contains masking logic: ` +
+        hits.filter(([, c]) => c > 0).map(([k, c]) => `${k} x${c}`).join(", "));
   }
 }
 

@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tessera — softmax</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+         margin: 0; padding: 24px; max-width: 940px; background: Canvas; color: CanvasText; }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .sub { opacity: .65; margin: 0 0 18px; }
+  button { font: inherit; padding: 7px 16px; cursor: pointer; border: 1px solid CanvasText;
+           border-radius: 5px; background: transparent; color: inherit; }
+  button:disabled { opacity: .4; cursor: default; }
+  pre { white-space: pre-wrap; word-break: break-word; margin: 16px 0 0; padding: 16px;
+        border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
+        border-radius: 6px; overflow-x: auto; }
+  .ok { color: #12894a; font-weight: 600; } .bad { color: #c02626; font-weight: 600; }
+  .warn { color: #a06a00; } .dim { opacity: .6; }
+  @media (prefers-color-scheme: dark) {
+    .ok { color: #4ade80; } .bad { color: #f87171; } .warn { color: #fbbf24; }
+  }
+</style>
+</head>
+<body>
+
+<h1>tessera — softmax over a ragged axis</h1>
+<p class="sub">
+  The <b>second kernel family</b>. Written to test whether the axis types derive its
+  boundary conditions, or whether the emitter had to be hand-extended.
+  See <code>docs/004-falsification.md</code>.
+</p>
+
+<button id="run">Run</button>
+<pre id="log">Ready.</pre>
+
+<script type="module">
+import { initDevice, compile } from "./run.js";
+import { createRunner, measureInterleaved } from "./measure.js";
+import { randomF32, softmaxF32, rowSums, maxUlpDiff, allClose, summarize,
+         bitExactCount } from "./oracle.js";
+
+const logEl = document.getElementById("log");
+const btn = document.getElementById("run");
+let buf = "";
+const write = (s = "") => { buf += s + "\n"; logEl.innerHTML = buf; };
+const yieldToPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+const f = (x, n = 3) => Number(x).toFixed(n);
+
+btn.addEventListener("click", async () => {
+  btn.disabled = true; buf = "";
+  try { await main(); }
+  catch (e) { write(`\n<span class="bad">FAILED</span>  ${e.message}`); }
+  finally { btn.disabled = false; }
+});
+
+async function main() {
+  const man = await (await fetch("./softmax.json")).json();
+  const M = man.axes.m, N = man.axes.n;
+
+  write("── what tessera derived from the types ────────────");
+  write(`kernel        ${man.name}   schedule ${man.schedule ?? "softmax"}`);
+  write(`axes          m=${M}  n=${N}   <span class="dim">(n is ragged: ${N} = ${Math.floor(N/64)}x64 + ${N%64})</span>`);
+  write(`workgroup     ${man.workgroup.join("x")}   fragment ${man.fragment.join("x")}   dispatch ${man.dispatch.join("x")}`);
+  write(`wgBytes       ${man.workgroupBytes}   <span class="dim">(rows x lanes scratch — softmax stages no operand)</span>`);
+  write(`pad           ${man.pad}   <span class="dim">the identity for a masked MAX. zero here would be</span>`);
+  write(`              <span class="dim">right until a tail row happened to be entirely negative.</span>`);
+  write(`masked        ${man.maskedLoads.join("  ")}`);
+  write("");
+
+  const ctx = await initDevice();
+  write("── run ────────────────────────────────────────────");
+  write(`adapter       ${ctx.adapterInfo.vendor} / ${ctx.adapterInfo.architecture}`);
+
+  const src = await (await fetch("./softmax.wgsl")).text();
+  const { pipeline, messages } = await compile(ctx.device, src, man.entryPoint, "softmax");
+  for (const m of messages) write(`<span class="warn">${m.type}</span> ${m.message}`);
+  const bounds = (src.match(/< \d+u\)/g) ?? []).length;
+  write(`shader        ${src.split("\n").length} lines   ${bounds} synthesised bound checks`);
+  write(`<span class="dim">              none of them written by the softmax emitter: it makes 2 emitLoad</span>`);
+  write(`<span class="dim">              and 1 emitStore calls and contains no masking logic at all.</span>`);
+
+  const x = randomF32(M * N, 0x99);
+  const runner = createRunner(ctx, pipeline, [x], man, "softmax");
+  const stats = await measureInterleaved([runner], { warmup: 6, reps: 15 });
+  const st = stats.get("softmax");
+  if (st) write(`gpu           min ${st.minQ}q  med ${st.medianQ}q  spread ${st.spreadQ}q`);
+
+  const got = await runner.result();
+  const s = summarize(got);
+  write(`output        min ${f(s.min, 6)}  max ${f(s.max, 6)}  mean ${f(s.mean, 8)}  nans ${s.nans}`);
+  write("");
+
+  // ---- check 1: independent of any oracle ---------------------------------
+  write("── does every row sum to 1? ───────────────────────");
+  write(`<span class="dim">A correct softmax normalises each row. This needs no reference at all —</span>`);
+  write(`<span class="dim">a wrong mask on the tail changes the denominator and this catches it.</span>`);
+  const sums = rowSums(got, { M, N });
+  let lo = Infinity, hi = -Infinity, worstRow = -1;
+  for (let i = 0; i < M; i++) {
+    if (sums[i] < lo) lo = sums[i];
+    if (sums[i] > hi) { hi = sums[i]; }
+    if (Math.abs(sums[i] - 1) > Math.abs((sums[worstRow < 0 ? 0 : worstRow]) - 1)) worstRow = i;
+  }
+  write(`row sums      [${lo.toFixed(9)}, ${hi.toFixed(9)}]   worst row ${worstRow}`);
+  const sumOk = Math.abs(lo - 1) < 1e-4 && Math.abs(hi - 1) < 1e-4;
+  write(sumOk ? `<span class="ok">PASS</span>  every row normalised.`
+              : `<span class="bad">FAIL</span>  rows do not sum to 1 — the reduction or its mask is wrong.`);
+  write("");
+
+  // ---- check 2: against the CPU oracle ------------------------------------
+  write("── against the CPU oracle ─────────────────────────");
+  write(`<span class="dim">computing the reference with the kernel's own traversal order…</span>`);
+  await yieldToPaint();
+  const want = softmaxF32(x, { M, N });
+
+  const exact = bitExactCount(got, want);
+  const { ulp, index } = maxUlpDiff(got, want);
+  const cmp = allClose(got, want, { rtol: 1e-5, atol: 1e-7 });
+  write(`bit-exact     ${exact} / ${got.length}   (${(100 * exact / got.length).toFixed(2)}%)`);
+  write(`max ULP       ${ulp}   <span class="dim">at [${Math.floor(index / N)}][${index % N}]</span>`);
+  write(`maxRelDiff    ${cmp.maxRelDiff.toExponential(3)}`);
+  write("");
+  write(`<span class="dim">Unlike the matmul, bit-exactness is the WRONG bar here. WGSL does not</span>`);
+  write(`<span class="dim">require exp() to be correctly rounded — it permits a few ULP — so the</span>`);
+  write(`<span class="dim">GPU's exp and JS's Math.exp are allowed to differ in the last place, and</span>`);
+  write(`<span class="dim">that difference then propagates through the sum and the divide.</span>`);
+  write("");
+  if (ulp <= 8) {
+    write(`<span class="ok">PASS</span>  within ${ulp} ULP — consistent with a permitted exp, not with a wrong mask.`);
+    write(`<span class="dim">A mask error would not be subtle: it would change the denominator for a</span>`);
+    write(`<span class="dim">whole row, and both this and the row-sum check would fail by O(1).</span>`);
+  } else {
+    write(`<span class="bad">FAIL</span>  ${ulp} ULP is too far to blame on exp's accuracy allowance.`);
+    const r = Math.floor(index / N), c = index % N;
+    write(`worst at [${r}][${c}]  gpu ${got[index]}  cpu ${want[index]}` +
+          `   <span class="dim">(the ragged tail starts at column ${N - (N % 64)})</span>`);
+  }
+  runner.destroy();
+}
+</script>
+</body>
+</html>

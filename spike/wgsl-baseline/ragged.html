@@ -108,7 +108,7 @@ async function main() {
     for (const mm of messages) write(`<span class="warn">${mm.type}</span> ${mm.message}`);
     write(`${bk.label}     ${String(src.split("\n").length).padStart(4)} lines   ` +
           `${String(src.match(/< \d+u\)/g)?.length ?? 0).padStart(3)} synthesised bound checks`);
-    runners.push({ bk, r: createRunner(ctx, pipeline, a, b, dims, bk.key, m2.dispatch) });
+    runners.push({ bk, r: createRunner(ctx, pipeline, [a, b], m2, bk.key) });
   }
   if (!runners.length) throw new Error("nothing compiled");
 

@@ -46,38 +46,43 @@ export const QUANTUM_NS = 65536;
  *
  * The rule: anything the compiler already decided is read, never re-derived.
  */
-export function createRunner(ctx, pipeline, a, b, { M, N, K }, label, dispatch) {
-  if (!Array.isArray(dispatch) || dispatch.length !== 3 || !dispatch.every(Number.isInteger)) {
-    throw new Error(
-      `${label}: createRunner needs an integer [x,y,z] dispatch from the manifest, got ` +
-      JSON.stringify(dispatch));
-  }
+export function createRunner(ctx, pipeline, inputs, manifest, label) {
   const { device, hasTimestamps } = ctx;
-  const bytesC = M * N * 4;
+  const { dispatch, bindings } = manifest;
+  if (!Array.isArray(dispatch) || dispatch.length !== 3 || !dispatch.every(Number.isInteger)) {
+    throw new Error(`${label}: manifest.dispatch must be three integers, got ${JSON.stringify(dispatch)}`);
+  }
 
-  const bufA = device.createBuffer({
-    size: a.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, label: `${label}:a`,
+  // One buffer per binding, sized and ordered by the manifest. Nothing here
+  // knows how many operands a schedule has: matmul declares three bindings and
+  // softmax two, and this reads whichever the compiler wrote down.
+  const bufs = bindings.map((bd) => device.createBuffer({
+    size: bd.elements * 4,
+    usage: GPUBufferUsage.STORAGE
+      | (bd.mode === "read" ? GPUBufferUsage.COPY_DST : GPUBufferUsage.COPY_SRC),
+    label: `${label}:${bd.name}`,
+  }));
+
+  const reads = bindings.map((bd, i) => [bd, i]).filter(([bd]) => bd.mode === "read");
+  reads.forEach(([bd, i], k) => {
+    const src = inputs[k];
+    if (!src || src.length !== bd.elements) {
+      throw new Error(`${label}: input ${k} for binding "${bd.name}" should have ` +
+                      `${bd.elements} elements, got ${src ? src.length : "nothing"}`);
+    }
+    device.queue.writeBuffer(bufs[i], 0, src);
   });
-  const bufB = device.createBuffer({
-    size: b.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, label: `${label}:b`,
-  });
-  const bufC = device.createBuffer({
-    size: bytesC, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, label: `${label}:c`,
-  });
+
+  const outIdx = bindings.findIndex((bd) => bd.mode === "write");
+  if (outIdx < 0) throw new Error(`${label}: no output binding in the manifest`);
+  const outBytes = bindings[outIdx].elements * 4;
   const readback = device.createBuffer({
-    size: bytesC, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, label: `${label}:rb`,
+    size: outBytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, label: `${label}:rb`,
   });
-
-  device.queue.writeBuffer(bufA, 0, a);
-  device.queue.writeBuffer(bufB, 0, b);
 
   const bindGroup = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: bufA } },
-      { binding: 1, resource: { buffer: bufB } },
-      { binding: 2, resource: { buffer: bufC } },
-    ],
+    entries: bindings.map((bd, i) => ({ binding: i, resource: { buffer: bufs[i] } })),
   });
 
   let querySet = null, queryResolve = null, queryRead = null;
@@ -119,7 +124,7 @@ export function createRunner(ctx, pipeline, a, b, { M, N, K }, label, dispatch) 
   /** Read the output once, for the correctness check. Not part of timing. */
   async function result() {
     const encoder = device.createCommandEncoder();
-    encoder.copyBufferToBuffer(bufC, 0, readback, 0, bytesC);
+    encoder.copyBufferToBuffer(bufs[outIdx], 0, readback, 0, outBytes);
     device.queue.submit([encoder.finish()]);
     await readback.mapAsync(GPUMapMode.READ);
     const out = new Float32Array(readback.getMappedRange().slice(0));
@@ -128,7 +133,7 @@ export function createRunner(ctx, pipeline, a, b, { M, N, K }, label, dispatch) 
   }
 
   function destroy() {
-    for (const b of [bufA, bufB, bufC, readback, queryResolve, queryRead]) b?.destroy();
+    for (const b of [...bufs, readback, queryResolve, queryRead]) b?.destroy();
     querySet?.destroy();
   }
 

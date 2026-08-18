@@ -217,3 +217,104 @@ export function summarize(x) {
   }
   return { zeros, nans, min, max, mean: sum / x.length, length: x.length };
 }
+
+// ---------------------------------------------------------------------------
+// Row softmax, mirroring the emitted kernel's traversal exactly.
+//
+//   y[m,n] = exp(x[m,n] - max_n x[m,:]) / sum_n exp(x[m,:] - max)
+//
+// The order matters and is not incidental. The kernel gives each lane `tx` the
+// columns `nn + tx*TN + n`, accumulates within a lane over ascending nn then
+// ascending n, and only then combines the WGX lane partials in ascending order.
+// A reference that summed the row left to right would differ in the last bits
+// for a reason that has nothing to do with correctness.
+//
+// UNLIKE the matmul, this cannot be bit-exact. WGSL does not require `exp` to be
+// correctly rounded — it permits a few ULP — so the GPU's exp and JS's
+// `Math.exp` are allowed to disagree in the last place, and that disagreement
+// then propagates through the sum and the divide. Bit-exactness is the right bar
+// for +, * and fma; for a transcendental it is the wrong question.
+// ---------------------------------------------------------------------------
+
+/** What the emitter writes for `negInf`: the largest finite f32 magnitude. */
+export const NEG_INF_F32 = Math.fround(-3.4028235e38);
+
+export function softmaxF32(x, { M, N }, geom = {}) {
+  const { BM = 64, BN = 64, WGX = 16, WGY = 16, TM = 4, TN = 4 } = geom;
+  const fr = Math.fround;
+  const y = new Float32Array(M * N);
+
+  for (let blockRow = 0; blockRow * BM < M; blockRow++) {
+    for (let ty = 0; ty < WGY; ty++) {
+      for (let m = 0; m < TM; m++) {
+        const row = blockRow * BM + ty * TM + m;
+        if (row >= M) continue;
+        const base = row * N;
+
+        // pass 1 — per-lane max over that lane's columns, then across lanes
+        const laneMax = new Float32Array(WGX).fill(NEG_INF_F32);
+        for (let nn = 0; nn < N; nn += BN) {
+          for (let tx = 0; tx < WGX; tx++) {
+            for (let n = 0; n < TN; n++) {
+              const col = nn + tx * TN + n;
+              const v = col < N ? x[base + col] : NEG_INF_F32;
+              if (v > laneMax[tx]) laneMax[tx] = v;
+            }
+          }
+        }
+        let mx = NEG_INF_F32;
+        for (let j = 0; j < WGX; j++) if (laneMax[j] > mx) mx = laneMax[j];
+
+        // pass 2 — per-lane sum of exp(x - max), then across lanes
+        const laneSum = new Float32Array(WGX);
+        for (let nn = 0; nn < N; nn += BN) {
+          for (let tx = 0; tx < WGX; tx++) {
+            for (let n = 0; n < TN; n++) {
+              const col = nn + tx * TN + n;
+              const v = col < N ? x[base + col] : NEG_INF_F32;
+              laneSum[tx] = fr(laneSum[tx] + fr(Math.exp(fr(v - mx))));
+            }
+          }
+        }
+        let sm = 0;
+        for (let j = 0; j < WGX; j++) sm = fr(sm + laneSum[j]);
+
+        // pass 3 — normalise the in-range columns
+        for (let nn = 0; nn < N; nn += BN) {
+          for (let tx = 0; tx < WGX; tx++) {
+            for (let n = 0; n < TN; n++) {
+              const col = nn + tx * TN + n;
+              if (col >= N) continue;
+              y[base + col] = fr(fr(Math.exp(fr(x[base + col] - mx))) / sm);
+            }
+          }
+        }
+      }
+    }
+  }
+  return y;
+}
+
+/** Row sums of the output. Every row of a correct softmax sums to 1. */
+export function rowSums(y, { M, N }) {
+  const out = new Float64Array(M);
+  for (let i = 0; i < M; i++) {
+    let s = 0;
+    for (let j = 0; j < N; j++) s += y[i * N + j];
+    out[i] = s;
+  }
+  return out;
+}
+
+/** Distance in ULP, the only scale on which a transcendental's error means anything. */
+export function maxUlpDiff(got, want) {
+  const gb = new Int32Array(new Float32Array(got).buffer);
+  const wb = new Int32Array(new Float32Array(want).buffer);
+  let worst = 0, at = -1;
+  const ord = (b) => (b < 0 ? 0x80000000 - b : b);   // monotone ordering of f32 bits
+  for (let i = 0; i < gb.length; i++) {
+    const d = Math.abs(ord(gb[i]) - ord(wb[i]));
+    if (d > worst) { worst = d; at = i; }
+  }
+  return { ulp: worst, index: at };
+}

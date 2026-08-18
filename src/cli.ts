@@ -101,7 +101,7 @@ function main(): void {
     console.log(`  ${at(".wgsl")}  ${wgslDirect.split("\n").length} lines`);
 
     const manifestDirect = {
-      name: ir.name, entryPoint: ir.name, backend: "wgsl", dtype: ir.dtype,
+      name: ir.name, entryPoint: ir.name, backend: "wgsl", schedule: ir.schedule, dtype: ir.dtype,
       workgroup: ir.workgroup, dispatch: ir.dispatch, fragment: ir.fragment,
       workgroupBytes: ir.workgroupBytes,
       axes: Object.fromEntries([...ir.grid, ...ir.reduce].map((x) => [x.name, x.extent])),
@@ -191,6 +191,7 @@ function main(): void {
     name: ir.name,
     entryPoint,
     backend: "mlir",
+    schedule: ir.schedule,
     dtype: ir.dtype,
     workgroup: ir.workgroup,
     dispatch: ir.dispatch,

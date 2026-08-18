@@ -171,13 +171,21 @@ async function main() {
     }
 
     let entry = v.entry;
-    let dispatch = v.dispatch ?? null;
+    // The hand-written kernel has no compiler behind it, so it carries a literal
+    // manifest of the same shape rather than a special case downstream.
+    let man = v.manifest ? null : {
+      dispatch: v.dispatch,
+      bindings: [
+        { name: "a", mode: "read",  elements: DIMS.M * DIMS.K },
+        { name: "b", mode: "read",  elements: DIMS.K * DIMS.N },
+        { name: "c", mode: "write", elements: DIMS.M * DIMS.N },
+      ],
+    };
     if (v.manifest) {
       const mres = await fetch(v.manifest);
       if (!mres.ok) { write(`  ${v.label.padEnd(34)} <span class="warn">no manifest</span>`); continue; }
-      const man = await mres.json();
+      man = await mres.json();
       entry = man.entryPoint;
-      dispatch = man.dispatch;
     }
 
     const t0 = performance.now();
@@ -185,7 +193,7 @@ async function main() {
     for (const m of messages) write(`<span class="warn">${m.type} ${m.line}:${m.col}</span> ${m.message}`);
     write(`  ${v.label.padEnd(34)} ${String(source.split("\n").length).padStart(4)} lines   ` +
           `pipeline ${f(performance.now() - t0, 1).padStart(7)} ms`);
-    runners.push({ v, r: createRunner(ctx, pipeline, a, b, DIMS, v.key, dispatch) });
+    runners.push({ v, r: createRunner(ctx, pipeline, [a, b], man, v.key) });
   }
   if (!runners.length) throw new Error("nothing compiled");
   write("");
