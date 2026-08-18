@@ -495,3 +495,44 @@ from the absolute difference at the worst-*ULP* element (1.6e-9) rather than at 
 *absolute* one (3.58e-7). The real margin is **2.5×** — comfortable, and the kernel uses
 about 40% of an 8-ULP budget. The 8 is a choice; it should be revisited if a kernel ever
 sits near it rather than being quietly widened.
+
+
+## R10. matmul joins the parser; the emitters stay two, honestly
+
+The last template was `matmul`, still recognised by counting operator names — "1 zeros,
+N loops, 1 mma, 1 store". That is gone. `parseBody` now reads both kinds of body:
+
+```
+matmul     accKind frag   accs [{acc, frag, zero}]        steps  reduce -> storeFrag
+softmax    accKind row    accs [{mx, row, negInf}, ...]   steps  reduce -> reduce -> store
+layernorm  accKind row    accs [{s, row, zero}, ...]      steps  reduce -> derived -> derived -> store
+```
+
+The schedule now *falls out* of what the body declares:
+
+```ts
+const schedule = parsed.accKind === "frag" ? "matmul" : "rowwise";
+```
+
+Zero operator-name counting remains in the front end. The matmul MLIR is still
+byte-identical to the verified reference, so the refactor changed nothing that is emitted.
+
+**The emitters are still two, and that is the honest result rather than a shortfall.**
+A fragment accumulates an outer product from two operands staged into workgroup memory; a
+row accumulator folds one cell at a time from an operand read straight from global memory.
+Those are different memory schedules, not different spellings of one. Unifying them means
+expressing both as a contraction over named axes — accumulate over `(m,n)` contracting `k`,
+versus accumulate over `(m)` contracting `n` — which is the linalg/einsum formulation, and
+a design step rather than a refactor.
+
+So the state, stated precisely:
+
+| | count | shared by |
+|---|---|---|
+| access layer (masks, flat indexing) | 1 | every schedule |
+| derivation (dispatch, fragment, masks-where) | 1 | every schedule |
+| body parser | 1 | every schedule |
+| emitter | **2** | fragment vs row-wise |
+
+Three of four are one. The fourth is two because the memory schedules genuinely differ,
+and the next honest step for it is named above rather than left as "more work".

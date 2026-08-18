@@ -162,6 +162,15 @@ export function emitWGSL(k: KernelIR): string {
         P();
         continue;
       }
+      if (step.k === "storeFrag") {
+        // A row-wise body stores one cell at a time inside a pass; a whole-fragment
+        // store belongs to the matmul schedule. Reaching here means the parser and
+        // the schedule choice disagree, which is a compiler bug rather than a user
+        // error, so it says so.
+        throw new Error(
+          `${k.name}: a row-wise body produced a whole-fragment store — ` +
+          `the parser and the schedule classification disagree`);
+      }
       const pass = step;
       P(`for (var nn : u32 = 0u; nn < ${u(nExtent)}; nn = nn + ${u(nBlock)}) {`, 1);
       for (let m = 0; m < tm; m++) {
@@ -171,8 +180,9 @@ export function emitWGSL(k: KernelIR): string {
           P(`let col = ${colOf(n)};`, 3);
           if (pass.k === "reduce") {
             // Every update in a pass reads the same cell once.
-            emitLoad(`let v`, bindingOf(pass.updates[0].value), "row", "col", 3);
-            for (const up of pass.updates) {
+            const folds = pass.updates.filter((x) => x.k === "fold");
+            emitLoad(`let v`, bindingOf(folds[0].value), "row", "col", 3);
+            for (const up of folds) {
               const val = blockExpr(up.value, m);
               P(up.op === "max"
                 ? `${slot(up.acc, m)} = max(${slot(up.acc, m)}, ${val});`
@@ -196,7 +206,8 @@ export function emitWGSL(k: KernelIR): string {
             P(`scratch[(ty * ${u(tm)} + ${u(m)}) * ${u(wgx)} + tx] = ${slot(nm, m)};`, 1);
           }
           P(`workgroupBarrier();`, 1);
-          const op = pass.updates.find((x) => x.acc === nm)!.op;
+          const u0 = pass.updates.find((x) => x.acc === nm)!;
+          const op = u0.k === "fold" ? u0.op : "sum";
           const init = op === "max" ? NEG : "0.0";
           for (let m = 0; m < tm; m++) {
             P(`{`, 1);

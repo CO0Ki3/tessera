@@ -21,7 +21,7 @@ import {
   derive, type AxisIR, type BindingIR, type DTypeName, type KernelIR, type PadName, type Schedule,
 } from "./ir.ts";
 
-import { parseRowBody, BodyError, type RowBody } from "./body.ts";
+import { parseBody, BodyError, type Body, type RowBody } from "./body.ts";
 
 const PAD_NAMES = ["zero", "one", "negInf", "posInf"] as const;
 
@@ -193,9 +193,6 @@ function checkCanonicalBody(
     ts.SyntaxKind.ImportKeyword,
   ]);
 
-  let forOf = 0, store = 0;
-  const op = new Map<string, number>();
-  const bump = (nm: string) => op.set(nm, (op.get(nm) ?? 0) + 1);
   const padded = new Map<string, PadName>();
 
   const visit = (n: ts.Node): void => {
@@ -218,11 +215,8 @@ function checkCanonicalBody(
         `not '${ts.tokenToString(n.operatorToken.kind)}'.`);
     }
 
-    if (ts.isForOfStatement(n)) forOf++;
-    else if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) bump(n.expression.text);
-    else if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
       const method = n.expression.name.text;
-      if (method === "store") store++;
       if (method === "pad") {
         const inner = n.expression.expression;
         const owner = ts.isCallExpression(inner) && ts.isPropertyAccessExpression(inner.expression)
@@ -248,47 +242,36 @@ function checkCanonicalBody(
   };
   visit(body.body);
 
-  // ---- which schedule is this? --------------------------------------------
-  // Recognition, not compilation. The set is fixed and small, and a body that
-  // matches none of them is refused rather than approximated.
-  const n = (nm: string) => op.get(nm) ?? 0;
-  const isMatmul = n("mma") > 0;
-  const isRowwise = n("rowFill") > 0;
-
-  if (isMatmul && isRowwise) {
-    fail(body, `this body mixes mma with row reductions; no schedule matches it.`);
+  // ---- read the body ------------------------------------------------------
+  // Not "which template does this match". The body is parsed into accumulators,
+  // steps and a small expression IR; the schedule then falls out of what kind of
+  // accumulator it declares. Counting operator names -- which is what this did
+  // for two kernel families and would have done for a third -- is gone.
+  let parsed: Body;
+  try {
+    parsed = parseBody(body.body, new Set(bindings.map((b) => b.name)), PAD_NAMES);
+  } catch (e) {
+    if (e instanceof BodyError) fail(e.node, e.message);
+    throw e;
   }
 
-  let schedule: Schedule;
-  let rowBody: RowBody | undefined;
-  if (isMatmul) {
-    schedule = "matmul";
-    const shape = `${n("zeros")} zeros / ${forOf} loops / ${n("mma")} mma / ${store} store`;
-    if (n("zeros") !== 1 || forOf !== reduceAxes.length || n("mma") !== 1 || store !== 1) {
-      fail(body,
-        `the matmul schedule is 1 zeros, ${reduceAxes.length} reduce loop(s), 1 mma, ` +
-        `1 store; this body is ${shape}.`);
+  const schedule: Schedule = parsed.accKind === "frag" ? "matmul" : "rowwise";
+
+  // The two emitters still differ, and honestly so: a fragment accumulates an
+  // outer product from two staged operands, a row accumulator folds one cell at a
+  // time from an operand read straight from global memory. Unifying those means a
+  // contraction abstraction, which is a design step rather than a refactor.
+  if (schedule === "matmul") {
+    const passes = parsed.steps.filter((x) => x.k === "reduce");
+    if (passes.length !== reduceAxes.length) {
+      fail(body, `a fragment schedule needs one pass per reduce axis; found ${passes.length}`);
     }
-  } else if (isRowwise) {
-    // Read, not matched. How many accumulators there are, how many passes, and
-    // what each does all come out of the statements — see body.ts. Adding
-    // layernorm after softmax needed no change here, which is the measurement
-    // docs/004 part 2 was set up to take.
-    schedule = "rowwise";
-    try {
-      rowBody = parseRowBody(body.body, new Set(bindings.map((b) => b.name)), PAD_NAMES);
-    } catch (e) {
-      if (e instanceof BodyError) fail(e.node, e.message);
-      throw e;
+    if (!parsed.steps.some((x) => x.k === "storeFrag")) {
+      fail(body, `a fragment schedule ends by storing the fragment`);
     }
-  } else {
-    fail(body,
-      `no schedule matches this body. Recognised today: a matmul (mma into a Frag) and ` +
-      `a row-wise reduction (rowFill, then passes over the reduce axis, then a store). ` +
-      `Guessing would emit something you did not write.`);
   }
 
-  return { padded, schedule, rowBody };
+  return { padded, schedule, rowBody: parsed };
 }
 
 // ---------------------------------------------------------------------------

@@ -40,10 +40,23 @@ export type RowExpr =
   | { readonly k: "mean"; readonly a: RowExpr }
   | { readonly k: "rstd"; readonly sumSq: RowExpr; readonly mean: RowExpr; readonly eps: number };
 
-export interface Update { readonly acc: string; readonly op: "max" | "sum"; readonly value: Expr }
+/** How an accumulator is laid out per invocation. */
+export type AccKind = "row" | "frag";
+
+export type Update =
+  /** Fold one operand cell into a row accumulator. */
+  | { readonly k: "fold"; readonly acc: string; readonly op: "max" | "sum"; readonly value: Expr }
+  /** Outer-product two operand slices into a 2-D fragment. */
+  | { readonly k: "mma"; readonly acc: string; readonly a: Expr; readonly b: Expr };
+
+/** A fragment-valued expression: an accumulator, or an elementwise map of one. */
+export type FragExpr =
+  | { readonly k: "acc"; readonly name: string }
+  | { readonly k: "map"; readonly op: "relu"; readonly a: FragExpr };
 
 export type Pass =
   | { readonly k: "reduce"; readonly updates: readonly Update[] }
+  /** A store inside a pass, one operand cell at a time. */
   | { readonly k: "store"; readonly binding: string; readonly value: Expr };
 
 /**
@@ -57,19 +70,39 @@ export type Pass =
  */
 export type Step =
   | { readonly k: "derived"; readonly name: string; readonly expr: RowExpr }
+  /** A store OUTSIDE any pass, of a whole fragment. matmul ends this way. */
+  | { readonly k: "storeFrag"; readonly binding: string; readonly value: FragExpr }
   | Pass;
 
-export interface RowBody {
-  readonly kind: "rowwise";
-  readonly accs: readonly { readonly name: string; readonly init: PadName }[];
+export interface Acc {
+  readonly name: string;
+  readonly kind: AccKind;
+  readonly init: PadName;
+}
+
+/**
+ * A kernel body, parsed.
+ *
+ * One representation for both schedules. What differs is the accumulator kind and
+ * therefore the update form — a row accumulator folds one cell at a time, a
+ * fragment accumulates an outer product — and where the store sits. Both are read
+ * from the source rather than matched against a shape.
+ */
+export interface Body {
+  readonly accKind: AccKind;
+  readonly accs: readonly Acc[];
   readonly steps: readonly Step[];
 }
+
+/** Retained for the row-wise emitter's narrower expectations. */
+export type RowBody = Body;
 
 const BLOCK_UNARY: Record<string, "sq" | "exp"> = { sqTile: "sq", expTile: "exp" };
 const ROW_COMBINE: Record<string, "sub" | "mul" | "div"> = {
   subRow: "sub", mulRow: "mul", divRow: "div",
 };
 const REDUCERS: Record<string, "max" | "sum"> = { rowMax: "max", rowSum: "sum" };
+const FRAG_MAP: Record<string, "relu"> = { relu: "relu" };
 
 export class BodyError extends Error {
   constructor(message: string, readonly node: ts.Node) { super(message); }
@@ -177,14 +210,26 @@ export function parseRow(n: ts.Expression, rowNames: ReadonlySet<string>): RowEx
  * out of the statements. softmax is 2 accumulators over 3 passes; layernorm is 2
  * over 2, updating both in the first; neither shape is written down anywhere.
  */
-export function parseRowBody(
+/** A fragment-valued expression: an accumulator, or an elementwise map of one. */
+export function parseFrag(n: ts.Expression, rowNames: ReadonlySet<string>): FragExpr {
+  if (ts.isIdentifier(n)) {
+    if (!rowNames.has(n.text)) bad(n, `'${n.text}' is not an accumulator in scope`);
+    return { k: "acc", name: n.text };
+  }
+  if (!ts.isCallExpression(n)) bad(n, `expected a fragment, got ${ts.SyntaxKind[n.kind]}`);
+  const fn = callee(n);
+  if (fn && fn in FRAG_MAP) return { k: "map", op: FRAG_MAP[fn], a: parseFrag(n.arguments[0], rowNames) };
+  return bad(n, `'${fn}' is not a fragment operation. Known: ${Object.keys(FRAG_MAP).join(", ")}.`);
+}
+
+export function parseBody(
   body: ts.ConciseBody,
   bindings: ReadonlySet<string>,
   padNames: readonly string[],
-): RowBody {
+): Body {
   if (!ts.isBlock(body)) bad(body, `a kernel body must be a block`);
 
-  const accs: { name: string; init: PadName }[] = [];
+  const accs: Acc[] = [];
   const steps: Step[] = [];
   const rowNames = new Set<string>();
 
@@ -202,20 +247,29 @@ export function parseRowBody(
         }
         if (!ts.isCallExpression(rhs)) bad(rhs, `expected a reduction`);
         const fn = callee(rhs);
-        if (!fn || !(fn in REDUCERS)) {
-          bad(rhs, `'${fn}' is not a reduction. Known: ${Object.keys(REDUCERS).join(", ")}.`);
+        if (!fn || !(fn in REDUCERS || fn === "mma")) {
+          bad(rhs, `'${fn}' is not a reduction. Known: ${Object.keys(REDUCERS).join(", ")}, mma.`);
         }
-        const carried = rhs.arguments[1];
+        // The accumulator is the last argument in both forms.
+        const carried = rhs.arguments[fn === "mma" ? 2 : 1];
         if (!carried || !ts.isIdentifier(carried) || carried.text !== lhs.text) {
           bad(carried ?? rhs,
             `a reduction must carry the accumulator it assigns — write ` +
             `\`${lhs.text} = ${fn}(..., ${lhs.text})\`. Carrying a different one silently ` +
             `computes something else.`);
         }
-        updates.push({
-          acc: lhs.text, op: REDUCERS[fn],
-          value: parseExpr(rhs.arguments[0], rowNames, bindings, padNames),
-        });
+        if (fn === "mma") {
+          updates.push({
+            k: "mma", acc: lhs.text,
+            a: parseExpr(rhs.arguments[0], rowNames, bindings, padNames),
+            b: parseExpr(rhs.arguments[1], rowNames, bindings, padNames),
+          });
+        } else {
+          updates.push({
+            k: "fold", acc: lhs.text, op: REDUCERS[fn],
+            value: parseExpr(rhs.arguments[0], rowNames, bindings, padNames),
+          });
+        }
         continue;
       }
 
@@ -259,7 +313,10 @@ export function parseRowBody(
           if (!nm || !padNames.includes(nm)) {
             bad(id ?? init, `rowFill's identity must be one of ${padNames.join(", ")}`);
           }
-          accs.push({ name: d.name.text, init: nm as PadName });
+          accs.push({ name: d.name.text, kind: "row", init: nm as PadName });
+        } else if (callee(init) === "zeros") {
+          // A 2-D register fragment. `zeros` names its identity by being zeros.
+          accs.push({ name: d.name.text, kind: "frag", init: "zero" });
         } else {
           steps.push({ k: "derived", name: d.name.text, expr: parseRow(init, rowNames) });
         }
@@ -270,10 +327,32 @@ export function parseRowBody(
 
     if (ts.isForOfStatement(st)) { steps.push(readUpdatesAndStore(st.statement)); continue; }
 
+    // `c.tile(...).store(relu(acc))` outside any loop: a whole-fragment store.
+    if (ts.isExpressionStatement(st) && ts.isCallExpression(st.expression)
+        && callee(st.expression) === "store") {
+      const slot = (st.expression.expression as ts.PropertyAccessExpression).expression;
+      if (!ts.isCallExpression(slot) || callee(slot) !== "tile") {
+        bad(st, `a store goes through <binding>.tile(...).store(...)`);
+      }
+      const recv = (slot.expression as ts.PropertyAccessExpression).expression;
+      if (!ts.isIdentifier(recv) || !bindings.has(recv.text)) {
+        bad(st, `.store() must go to a binding declared in spec.bindings`);
+      }
+      steps.push({
+        k: "storeFrag", binding: recv.text,
+        value: parseFrag(st.expression.arguments[0], rowNames),
+      });
+      continue;
+    }
+
     bad(st, `TSA0104: ${ts.SyntaxKind[st.kind]} is not admitted at the top level of a body`);
   }
 
-  if (!accs.length) bad(body, `no accumulator: a row-wise kernel starts with rowFill(...)`);
-  if (!steps.some((p) => p.k === "store")) bad(body, `no store: nothing is written`);
-  return { kind: "rowwise", accs, steps };
+  if (!accs.length) bad(body, `no accumulator: a body starts with zeros(...) or rowFill(...)`);
+  if (!steps.some((p) => p.k === "store" || p.k === "storeFrag")) {
+    bad(body, `no store: nothing is written`);
+  }
+  const kinds = new Set(accs.map((a) => a.kind));
+  if (kinds.size > 1) bad(body, `a body mixes register fragments with row accumulators`);
+  return { accKind: accs[0].kind, accs, steps };
 }
