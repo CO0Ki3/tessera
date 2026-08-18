@@ -255,6 +255,40 @@ Recorded as a standing invariant with the measurement method, the three
 hypotheses already refuted, and the experiment that decides the remaining one:
 **[`002-performance.md`](002-performance.md)**.
 
+## 6b. Ragged axes: verified on hardware
+
+`examples/matmul-ragged.kernel.ts` at **1000 × 750 × 500**, where no axis divides
+its block, is **bit-exact against the CPU oracle: 750000 / 750000**, tails
+included (40 rows, 46 columns, 4 deep).
+
+The diff against the aligned kernel is three literals and two `.pad(0)` calls.
+The loop, the accumulator and the store are character-identical, and there is no
+mask expression anywhere in the body. tessera synthesised **12 bound checks**;
+the aligned kernel still contains **zero**, which the regression suite asserts —
+an aligned kernel that grew a bound check would mean the emitter is hedging, and
+hedging is the exact cost the static design pays to avoid.
+
+Two mask forms, chosen for different reasons:
+
+| | form | why |
+|---|---|---|
+| loads | clamp the address, then `select` the identity | branchless; a branch would diverge across a workgroup for exactly one block per row |
+| store | a real `scf.if` | a store cannot be clamped — writing to a legal-but-wrong address corrupts a real element |
+
+**The surface catches more than the front end does.** All three ragged negatives
+are rejected by GATE 1, before tessera's own pass runs, with the diagnostics §2
+specified: the string sentinel *"this block is ragged: call .pad(identity)…"* for
+a missing identity, and *"Type '1' is not assignable to type '0'"* for a
+non-annihilating pad reaching a reduction.
+
+**The one failure was in the host, twice over.** The first hardware run failed
+37114 elements — the whole tail region — because the harness derived the dispatch
+as `[N/64, M/64, 1]`, which is neither integer division nor a ceiling, so the
+last block in each dimension was never launched. The manifest already said
+`[12, 16, 1]`. Combined with the earlier entry-point bug, the rule is now
+explicit and enforced: **anything the compiler has decided is read from the
+manifest, never re-derived.**
+
 ## 7. Deferred, explicitly
 
 Whole-tensor façade (v1, ~2-3 weeks) · dynamic shapes · autotuning (the legal tile space is finite:
