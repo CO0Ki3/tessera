@@ -31,7 +31,8 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
 
   for (var t_cb : u32 = 0u; t_cb < 750u; t_cb = t_cb + 64u) {
     for (var t_s : u32 = 0u; t_s < 4u; t_s = t_s + 1u) {
-      let t_ci = t_cb + tx * 4u + t_s;
+      let t_lc = tx * 4u + t_s;
+      let t_ci = t_cb + t_lc;
         let off0 = (base_m + ty * 4u + 0u) * 750u + (t_ci);
         let v_x_0 = select(-3.4028234663852886e38, x[min(off0, 767999u)], (t_ci) < 750u);
         let off1 = (base_m + ty * 4u + 1u) * 750u + (t_ci);
@@ -84,7 +85,8 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
 
   for (var t_cb : u32 = 0u; t_cb < 750u; t_cb = t_cb + 64u) {
     for (var t_s : u32 = 0u; t_s < 4u; t_s = t_s + 1u) {
-      let t_ci = t_cb + tx * 4u + t_s;
+      let t_lc = tx * 4u + t_s;
+      let t_ci = t_cb + t_lc;
         let off4 = (base_m + ty * 4u + 0u) * 750u + (t_ci);
         let v_x_0 = select(-3.4028234663852886e38, x[min(off4, 767999u)], (t_ci) < 750u);
         let off5 = (base_m + ty * 4u + 1u) * 750u + (t_ci);
@@ -137,7 +139,8 @@ fn softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
 
   for (var t_cb : u32 = 0u; t_cb < 750u; t_cb = t_cb + 64u) {
     for (var t_s : u32 = 0u; t_s < 4u; t_s = t_s + 1u) {
-      let t_ci = t_cb + tx * 4u + t_s;
+      let t_lc = tx * 4u + t_s;
+      let t_ci = t_cb + t_lc;
         let off8 = (base_m + ty * 4u + 0u) * 750u + (t_ci);
         let v_x_0 = select(-3.4028234663852886e38, x[min(off8, 767999u)], (t_ci) < 750u);
         let off9 = (base_m + ty * 4u + 1u) * 750u + (t_ci);

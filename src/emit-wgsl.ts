@@ -192,13 +192,39 @@ export function emitWGSL(k: KernelIR): string {
     }
     if (staged.length) { P(`workgroupBarrier();`, 2); P(); }
 
+    // The part of a staged address that does not move with the contract step is
+    // loop-invariant by construction — it is the invocation's own slice — so it is
+    // computed once rather than once per step per operand.
+    const hoisted = new Map<string, string>();
+    for (const o of staged) {
+      const bd = byName(o.binding);
+      const dims = bd.axes.map((a) => axisOf.get(a)!.block);
+      const accAxis = bd.axes.find((a) => sliceOf.has(a))!;
+      const sl = sliceOf.get(accAxis)!;
+      const lane = sl.lane === "x" ? "tx" : "ty";
+      for (let i = 0; i < sl.slice; i++) {
+        const nm = T_(`base_${o.binding}_${i}`);
+        // Row-major: the accumulate axis is either the row or the column of the
+        // staged block, and which one decides what the invariant term looks like.
+        hoisted.set(`${o.binding}_${i}`, nm);
+        P(bd.axes[0] === accAxis
+          ? `let ${nm} = (${lane} * ${u(sl.slice)} + ${u(i)}) * ${u(dims[1])};`
+          : `let ${nm} = ${lane} * ${u(sl.slice)} + ${u(i)};`, 2);
+      }
+    }
     P(`for (var ${T_("s")} : u32 = 0u; ${T_("s")} < ${u(seqDepth)}; ${T_("s")} = ${T_("s")} + 1u) {`, 2);
     // The contract coordinate this invocation handles at this step. When lanes split
     // the contraction each lane takes a contiguous run, which keeps the reads coalesced.
     const laneId = plan.lanes.contractLanes.includes("x") ? "tx" : "ty";
+    // Two coordinates, not one. `lc` is the offset INSIDE the contract block —
+    // what a staged read wants — and `ci` is the global index a direct read wants.
+    // Deriving the first from the second meant emitting `ci - cb`, which is an add
+    // and a subtract that cancel, repeated once per staged operand slice, and which
+    // stops the address being an obvious affine function of the loop variable.
     P(plan.lanes.needsCombine
-      ? `let ${T_("ci")} = ${T_("cb")} + ${laneId} * ${u(seqDepth)} + ${T_("s")};`
-      : `let ${T_("ci")} = ${T_("cb")} + ${T_("s")};`, 3);
+      ? `let ${T_("lc")} = ${laneId} * ${u(seqDepth)} + ${T_("s")};`
+      : `let ${T_("lc")} = ${T_("s")};`, 3);
+    P(`let ${T_("ci")} = ${T_("cb")} + ${T_("lc")};`, 3);
 
     // One read per operand per combination of the accumulate axes it mentions.
     for (const o of plan.operands) {
@@ -214,11 +240,12 @@ export function emitWGSL(k: KernelIR): string {
         const name = operandVal(o.binding, c);
         if (o.staged) {
           const dims = bd.axes.map((a) => axisOf.get(a)!.block);
-          const local = bd.axes.map((a) =>
-            a === contract.name
-              ? `${T_("ci")} - ${T_("cb")}`
-              : `${sliceOf.get(a)!.lane === "x" ? "tx" : "ty"} * ${u(sliceOf.get(a)!.slice)} + ${u(c[a])}`);
-          P(`let ${name} = ${stageName(o.binding)}[(${local[0]}) * ${u(dims[1])} + (${local[1]})];`, 4);
+          const accAxis = bd.axes.find((a) => sliceOf.has(a))!;
+          const base = hoisted.get(`${o.binding}_${c[accAxis]}`)!;
+          // base already carries the invariant term; the step contributes the rest.
+          P(bd.axes[0] === accAxis
+            ? `let ${name} = ${stageName(o.binding)}[${base} + ${T_("lc")}];`
+            : `let ${name} = ${stageName(o.binding)}[${T_("lc")} * ${u(dims[1])} + ${base}];`, 4);
         } else {
           const g0 = bd.axes[0] === contract.name ? T_("ci") : accCoord(bd.axes[0], c[bd.axes[0]]);
           const g1 = bd.axes[1] === contract.name ? T_("ci") : accCoord(bd.axes[1], c[bd.axes[1]]);
@@ -330,11 +357,37 @@ export function emitWGSL(k: KernelIR): string {
 
   if (storeWalksContraction && storeStep.k === "store") {
     P(`for (var ${T_("cb")} : u32 = 0u; ${T_("cb")} < ${u(contract.extent)}; ${T_("cb")} = ${T_("cb")} + ${u(contractBlock)}) {`, 1);
+    // The part of a staged address that does not move with the contract step is
+    // loop-invariant by construction — it is the invocation's own slice — so it is
+    // computed once rather than once per step per operand.
+    const hoisted = new Map<string, string>();
+    for (const o of staged) {
+      const bd = byName(o.binding);
+      const dims = bd.axes.map((a) => axisOf.get(a)!.block);
+      const accAxis = bd.axes.find((a) => sliceOf.has(a))!;
+      const sl = sliceOf.get(accAxis)!;
+      const lane = sl.lane === "x" ? "tx" : "ty";
+      for (let i = 0; i < sl.slice; i++) {
+        const nm = T_(`base_${o.binding}_${i}`);
+        // Row-major: the accumulate axis is either the row or the column of the
+        // staged block, and which one decides what the invariant term looks like.
+        hoisted.set(`${o.binding}_${i}`, nm);
+        P(bd.axes[0] === accAxis
+          ? `let ${nm} = (${lane} * ${u(sl.slice)} + ${u(i)}) * ${u(dims[1])};`
+          : `let ${nm} = ${lane} * ${u(sl.slice)} + ${u(i)};`, 2);
+      }
+    }
     P(`for (var ${T_("s")} : u32 = 0u; ${T_("s")} < ${u(seqDepth)}; ${T_("s")} = ${T_("s")} + 1u) {`, 2);
     const laneId = plan.lanes.contractLanes.includes("x") ? "tx" : "ty";
+    // Two coordinates, not one. `lc` is the offset INSIDE the contract block —
+    // what a staged read wants — and `ci` is the global index a direct read wants.
+    // Deriving the first from the second meant emitting `ci - cb`, which is an add
+    // and a subtract that cancel, repeated once per staged operand slice, and which
+    // stops the address being an obvious affine function of the loop variable.
     P(plan.lanes.needsCombine
-      ? `let ${T_("ci")} = ${T_("cb")} + ${laneId} * ${u(seqDepth)} + ${T_("s")};`
-      : `let ${T_("ci")} = ${T_("cb")} + ${T_("s")};`, 3);
+      ? `let ${T_("lc")} = ${laneId} * ${u(seqDepth)} + ${T_("s")};`
+      : `let ${T_("lc")} = ${T_("s")};`, 3);
+    P(`let ${T_("ci")} = ${T_("cb")} + ${T_("lc")};`, 3);
     for (const o of plan.operands) {
       const bd = byName(o.binding);
       for (const c of cells) {

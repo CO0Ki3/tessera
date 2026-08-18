@@ -58,16 +58,25 @@ fn matmul_relu_ragged(@builtin(workgroup_id)        wg  : vec3<u32>,
     }
     workgroupBarrier();
 
+    let t_base_a_0 = (ty * 4u + 0u) * 16u;
+    let t_base_a_1 = (ty * 4u + 1u) * 16u;
+    let t_base_a_2 = (ty * 4u + 2u) * 16u;
+    let t_base_a_3 = (ty * 4u + 3u) * 16u;
+    let t_base_b_0 = tx * 4u + 0u;
+    let t_base_b_1 = tx * 4u + 1u;
+    let t_base_b_2 = tx * 4u + 2u;
+    let t_base_b_3 = tx * 4u + 3u;
     for (var t_s : u32 = 0u; t_s < 16u; t_s = t_s + 1u) {
-      let t_ci = t_cb + t_s;
-        let v_a_0 = stage_a[(ty * 4u + 0u) * 16u + (t_ci - t_cb)];
-        let v_a_1 = stage_a[(ty * 4u + 1u) * 16u + (t_ci - t_cb)];
-        let v_a_2 = stage_a[(ty * 4u + 2u) * 16u + (t_ci - t_cb)];
-        let v_a_3 = stage_a[(ty * 4u + 3u) * 16u + (t_ci - t_cb)];
-        let v_b_0 = stage_b[(t_ci - t_cb) * 64u + (tx * 4u + 0u)];
-        let v_b_1 = stage_b[(t_ci - t_cb) * 64u + (tx * 4u + 1u)];
-        let v_b_2 = stage_b[(t_ci - t_cb) * 64u + (tx * 4u + 2u)];
-        let v_b_3 = stage_b[(t_ci - t_cb) * 64u + (tx * 4u + 3u)];
+      let t_lc = t_s;
+      let t_ci = t_cb + t_lc;
+        let v_a_0 = stage_a[t_base_a_0 + t_lc];
+        let v_a_1 = stage_a[t_base_a_1 + t_lc];
+        let v_a_2 = stage_a[t_base_a_2 + t_lc];
+        let v_a_3 = stage_a[t_base_a_3 + t_lc];
+        let v_b_0 = stage_b[t_lc * 64u + t_base_b_0];
+        let v_b_1 = stage_b[t_lc * 64u + t_base_b_1];
+        let v_b_2 = stage_b[t_lc * 64u + t_base_b_2];
+        let v_b_3 = stage_b[t_lc * 64u + t_base_b_3];
         acc[0] = acc[0] + v_a_0 * v_b_0;
         acc[1] = acc[1] + v_a_0 * v_b_1;
         acc[2] = acc[2] + v_a_0 * v_b_2;
