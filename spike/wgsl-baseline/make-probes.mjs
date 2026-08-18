@@ -58,4 +58,48 @@ if (/var<storage, read>/.test(mlirRO) === false) throw new Error("probe A2: no s
 writeFileSync("probe-tessera-ro.wgsl", mlirRO);
 console.log("  probe-tessera-ro.wgsl   tessera output, inputs marked read");
 
-console.log("\nreload the harness; both probes are timed alongside the originals.");
+// ---- probe D: the direct WGSL pushed through naga and back -----------------
+// MLIR is entirely out of this one. The round-trip acquires naga's
+// loop{}/continuing{} form but NOT the 144 phi variables or the 4 bitcasts that
+// only the MLIR path has, so it separates the two remaining candidates for the
+// 1.57x: if this stays fast, the loop form is innocent.
+//
+// naga also INSERTS a workgroup zero-init that neither the direct nor the MLIR
+// path pays:
+//
+//     if (local_invocation_index == 0u) { As = array<f32,1024>(); Bs = ...; }
+//     workgroupBarrier();
+//
+// One invocation writing 2048 floats plus a barrier, once per workgroup. Leaving
+// it in would mean the probe measures that instead of the loop form, so it is
+// removed. Safe for this kernel specifically: the staging loops write every
+// element of both arrays before any read (1024 / 256 invocations = exactly 4
+// each), and the barrier guards nothing, since no shared write precedes it.
+{
+  const { execFileSync } = await import("node:child_process");
+  const tmp = "probe-direct-roundtrip.spv";
+  execFileSync("naga", ["matmul-direct.wgsl", tmp]);
+  execFileSync("naga", [tmp, "probe-direct-roundtrip.wgsl"]);
+
+  let rt = readFileSync("probe-direct-roundtrip.wgsl", "utf8");
+  const zeroInit =
+    /\n\s*if \(_e\d+ == 0u\) \{\n\s*global_\d+ = array<f32, \d+>\(\);\n\s*global_\d+ = array<f32, \d+>\(\);\n\s*\}\n\s*workgroupBarrier\(\);/;
+  if (!zeroInit.test(rt)) {
+    throw new Error("probe D: naga's workgroup zero-init was not found — has its output changed? " +
+                    "Leaving it in would silently make this probe measure the wrong thing.");
+  }
+  rt = rt.replace(zeroInit, "");
+  writeFileSync("probe-direct-roundtrip.wgsl", rt);
+
+  const ep = rt.match(/@compute[^\n]*\n\s*fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/)[1];
+  const man = JSON.parse(readFileSync("matmul-direct.json", "utf8"));
+  man.entryPoint = ep;
+  man.backend = "wgsl-roundtrip";
+  writeFileSync("probe-direct-roundtrip.json", JSON.stringify(man, null, 2) + "\n");
+
+  execFileSync("naga", ["probe-direct-roundtrip.wgsl"]);   // still valid?
+  console.log(`  probe-direct-roundtrip.wgsl  direct WGSL through naga and back ` +
+              `(entry "${ep}", zero-init removed)`);
+}
+
+console.log("\nreload the harness; the probes are timed alongside the originals.");

@@ -143,6 +143,13 @@ async function main() {
     // costs the 1.57x, removing the loop should close it.
     { key: "mlirUnroll", file: "./probe-tessera-unroll.wgsl", manifest: "./matmul-mlir.json",
       probe: true, label: "probe C: tessera, k-loop unrolled" },
+    // Probe D: the direct WGSL pushed through naga and back, with MLIR entirely
+    // out of the picture. The round-trip picks up loop{}/continuing{} but NOT
+    // the 144 phi variables or the 4 bitcasts, so it separates the two
+    // candidates: if this stays fast, the loop form is innocent.
+    { key: "roundtrip", file: "./probe-direct-roundtrip.wgsl",
+      manifest: "./probe-direct-roundtrip.json", probe: true,
+      label: "probe D: direct, naga round-trip" },
   ];
 
   const a = randomF32(M * K, 0x1234);
@@ -252,6 +259,22 @@ async function main() {
       write(`  unrolled vs hand-written     ${f(q("mlirUnroll") / q("hand"), 2)}x`);
     }
   }
+  if (q("roundtrip") && q("direct")) {
+    write("");
+    write(`naga round-trip cost           ${f(q("roundtrip") / q("direct"), 2)}x   ` +
+          `<span class="dim">(${q("direct")}q → ${q("roundtrip")}q; gains loop{}/continuing{}, ` +
+          `no phi, no bitcast)</span>`);
+    if (q("roundtrip") <= q("direct") + 1) {
+      write(`  <span class="ok">the loop form is innocent</span> — the cost is the 144 phi ` +
+            `variables and/or the 4 bitcasts, which only the MLIR path has.`);
+    } else if (q("roundtrip") >= q("mlir") - 1) {
+      write(`  <span class="warn">the loop form is the cost</span> — naga's reconstruction alone ` +
+            `reproduces the gap, with no MLIR involved.`);
+    } else {
+      write(`  <span class="warn">partial</span> — the loop form accounts for some of it, ` +
+            `phi/bitcast for the rest.`);
+    }
+  }
   if (q("hand") && q("handRW")) {
     write(`hand: read → read_write        ${f(q("handRW") / q("hand"), 2)}x`);
   }
@@ -279,9 +302,10 @@ async function main() {
           (same === results.hand.length
             ? `  <span class="ok">IDENTICAL</span>` : `  <span class="bad">DIVERGENT</span>`));
   }
-  for (const k of ["handRW", "mlirRO", "mlirNoOpt", "mlirUnroll"]) {
+  for (const k of ["handRW", "mlirRO", "mlirNoOpt", "mlirUnroll", "roundtrip"]) {
     if (!results[k]) continue;
-    const base = k === "handRW" ? results.hand : results.mlir;
+    const base = k === "handRW" ? results.hand
+               : k === "roundtrip" ? results.direct : results.mlir;
     const same = bitExactCount(results[k], base);
     if (same !== base.length) write(`  <span class="bad">probe ${k} changed the numbers — ignore its timing</span>`);
   }
