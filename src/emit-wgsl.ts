@@ -1,342 +1,362 @@
 /**
- * emit-wgsl.ts — tessera IR straight to WGSL, bypassing MLIR entirely.
+ * emit-wgsl.ts — tessera IR to WGSL, one emitter for every schedule.
  *
- * This is the A/B that settles docs/002 §4. The MLIR path crosses four
- * translation boundaries the hand-written kernel does not
- * (IR → MLIR → SPIR-V → naga → WGSL), and by elimination that is the remaining
- * candidate for the 1.57× gap: three hypotheses about tessera making worse
- * codegen choices were each probed and refuted.
+ * There used to be two: a fragment path that staged two operands and accumulated an
+ * outer product, and a row-wise path that folded one cell at a time out of global
+ * memory. docs/004 R10 called that split honest — "different memory schedules, not
+ * different spellings of one" — and it was wrong. Both are a contraction, and the
+ * differences fall out of the operands' index sets. See src/contraction.ts.
  *
- * For the comparison to mean anything, this backend must make the SAME decisions
- * as the MLIR one and differ ONLY in how it emits them. So it deliberately
- * mirrors emit-mlir.ts: same tile, same fragment layout, same staging loop
- * structure, same clamp-and-select for masked loads, same conditional store, the
- * same rolled k loop. Anything that differs here is a confound, not a result.
+ * What the plan decides, so that this file does not:
+ *   - which lane dimension carries which accumulate axis (the contiguous axis takes
+ *     `x`, which is coalescing rather than taste)
+ *   - which operands are staged (the ones reused across an accumulate axis they omit)
+ *   - whether lane partials must be combined (only when the contract axis got a lane)
+ *   - how many sequential contract steps each invocation walks
  *
- * Two differences are unavoidable and are the point:
- *   - loops come out structured, because WGSL is structured, where the MLIR path
- *     goes through an unstructured IR and naga reconstructs `loop{}/continuing{}`
- *   - storage access modes are `read` where the surface says `read`, because the
- *     IR knows the binding mode. The MLIR path drops that on the floor.
- *     (Probe A measured access mode at 1.00×, so this is not a confound.)
- *
- * It is also the third oracle. With three backends agreeing bit-for-bit, a future
- * divergence localises to one of them in a single comparison instead of a
- * twelve-pass bisection.
+ * Every access still goes through the access layer below, so no mask is placed here
+ * and no index is flattened here — those come from the binding's axes and which of
+ * them are ragged.
  */
 
 import { PAD_LITERAL, type AxisIR, type BindingIR, type KernelIR } from "./ir.ts";
-import type { Expr, RowExpr } from "./body.ts";
+import { planContraction, type ContractionPlan } from "./contraction.ts";
+import type { Expr, FragExpr, RowExpr, Update } from "./body.ts";
 
 export function emitWGSL(k: KernelIR): string {
-  const { bm, bn, bk } = k.tile;
   const [wgx, wgy] = k.workgroup;
-  const [tm, tn] = k.fragment;
-  const threads = wgx * wgy;
-  const nacc = tm * tn;
   const ty = k.dtype;
+  const body = k.body;
+  if (!body) throw new Error(`${k.name}: no parsed body`);
 
-  const [gm, gn] = k.grid;
-  const rk = k.reduce[0];
-  const ragged = (a: AxisIR) => a.fit === "ragged";
-  /** The masked-load fill, by name. `zero` is not the only possibility. */
-  const PAD = PAD_LITERAL[k.pad];
+  const accumulate = k.grid;
+  const contract = k.reduce[0];
+  const out = k.bindings.find((b) => b.mode === "write")!;
+  const reads = k.bindings.filter((b) => b.mode === "read");
 
-  const extent = new Map([...k.grid, ...k.reduce].map((a) => [a.name, a.extent]));
-  const pick = (mode: "read" | "write", i: number) => k.bindings.filter((b) => b.mode === mode)[i];
-  const a = pick("read", 0), b = pick("read", 1), c = pick("write", 0);
-  const rowwise = k.schedule === "rowwise";
-  const stride = (x: typeof a) => extent.get(x.axes[1])!;
+  const plan = planContraction(
+    accumulate, contract,
+    reads.map((b) => ({ binding: b.name, axes: b.axes })),
+    k.workgroup,
+    out.axes[1],                      // the output's last index is contiguous
+  );
 
   const L: string[] = [];
   const P = (s = "", i = 0) => L.push(s ? "  ".repeat(i) + s : "");
   const u = (n: number) => `${n}u`;
-
-
-  // ---- the access layer ----------------------------------------------------
-  // Reading and writing a binding is the same operation regardless of schedule:
-  // flatten the logical coordinates row-major over the binding's own axes, and
-  // guard exactly the axes that are ragged. Nothing here knows what a matmul is,
-  // which is the property being tested — a second schedule should be able to use
-  // it unchanged.
+  const PAD = PAD_LITERAL[k.pad];
+  const ragged = (a: AxisIR) => a.fit === "ragged";
   const axisOf = new Map([...k.grid, ...k.reduce].map((x) => [x.name, x]));
+  const byName = (n: string) => k.bindings.find((x) => x.name === n)!;
+  /**
+   * The workgroup buffer staging an operand. Prefixed rather than suffixed: the
+   * obvious `${binding}s` turns a binding named `a` into `as`, which is a WGSL
+   * reserved keyword. Any scheme that derives identifiers from user-supplied names
+   * has to assume they will collide with the target language eventually.
+   */
+  const stageName = (binding: string) => `stage_${binding}`;
+  /**
+   * Names the emitter invents. They share a scope with the accumulators the user
+   * named, so they carry a prefix no surface identifier can produce: layernorm
+   * calls an accumulator `s`, which shadowed a loop counter also called `s` and
+   * turned `s[0]` into an index into a u32. Same class as `a` staging into `as`.
+   */
+  const T_ = (n: string) => `t_${n}`;
+  const stride = (bd: BindingIR) => axisOf.get(bd.axes[1])!.extent;
+  const laneW = { x: wgx, y: wgy } as const;
 
-  /** The bound checks a binding needs at these coordinates, or [] if exact. */
+  // ---- the access layer ------------------------------------------------------
+  // Reading and writing a binding is the same operation regardless of schedule:
+  // flatten row-major over the binding's own axes, and guard exactly the axes that
+  // are ragged. Nothing here knows what a contraction is.
   const guards = (bd: BindingIR, i0: string, i1: string): string[] => {
-    const out: string[] = [];
+    const g: string[] = [];
     for (const [j, coord] of [[0, i0], [1, i1]] as const) {
       const ax = axisOf.get(bd.axes[j])!;
-      if (ragged(ax)) out.push(`${coord} < ${u(ax.extent)}`);
+      if (ragged(ax)) g.push(`${coord} < ${u(ax.extent)}`);
     }
-    return out;
+    return g;
   };
-
-  /** `<lhs> = <the value at (i0,i1)>;` — clamped and selected when masked. */
+  let offN = 0;
   const emitLoad = (lhs: string, bd: BindingIR, i0: string, i1: string, ind: number) => {
-    P(`let off = ${i0} * ${u(stride(bd))} + ${i1};`, ind);
+    const off = `off${offN++}`;
+    P(`let ${off} = ${i0} * ${u(stride(bd))} + ${i1};`, ind);
     const g = guards(bd, i0, i1);
-    if (g.length === 0) {
-      P(`${lhs} = ${bd.name}[off];`, ind);
-    } else {
-      // Clamp then select: branchless, and identical in meaning to what the MLIR
-      // backend emits. A branch would diverge for exactly one block per row.
-      P(`${lhs} = select(${PAD}, ${bd.name}[min(off, ${u(bd.elements - 1)})], ${g.join(" && ")});`, ind);
-    }
+    P(g.length === 0
+      ? `${lhs} = ${bd.name}[${off}];`
+      // Clamp then select: branchless. A branch would diverge for exactly one
+      // block per row.
+      : `${lhs} = select(${PAD}, ${bd.name}[min(${off}, ${u(bd.elements - 1)})], ${g.join(" && ")});`, ind);
   };
-
-  /** A store cannot be clamped: a legal-but-wrong address corrupts a real element. */
   const emitStore = (bd: BindingIR, i0: string, i1: string, val: string, ind: number) => {
     const g = guards(bd, i0, i1);
-    const write = `${bd.name}[${i0} * ${u(stride(bd))} + ${i1}] = ${val};`;
-    if (g.length === 0) { P(write, ind); return; }
-    P(`if (${g.join(" && ")}) {`, ind);
-    P(write, ind + 1);
-    P(`}`, ind);
+    const w = `${bd.name}[${i0} * ${u(stride(bd))} + ${i1}] = ${val};`;
+    if (!g.length) { P(w, ind); return; }
+    // A store cannot be clamped: a legal-but-wrong address corrupts a real element.
+    P(`if (${g.join(" && ")}) {`, ind); P(w, ind + 1); P(`}`, ind);
   };
 
+  // ---- geometry from the plan ------------------------------------------------
+  const slices = plan.lanes.perAxis;                       // accumulate axis -> lane, slice
+  const sliceOf = new Map(slices.map((s) => [s.axis, s]));
+  const frag = plan.lanes.fragment;
+  const contractLaneW = plan.lanes.contractLanes.reduce((n, l) => n * laneW[l], 1);
+  const contractBlock = contract.block;
+  const seqDepth = contractBlock / contractLaneW;
+  const staged = plan.operands.filter((o) => o.staged);
 
-  /**
-   * The row-wise schedule, emitted from the parsed body.
-   *
-   * There is no softmax path and no layernorm path. The accumulators, the passes
-   * over the reduce axis, the derived row values and the store all come out of
-   * `k.body`, which was read from the statements the author wrote. Adding
-   * layernorm after softmax added no lines here.
-   *
-   * Every access still goes through emitLoad / emitStore — the same functions the
-   * matmul schedule uses — so no mask is placed here and no index is flattened
-   * here. That was measured in docs/004 part 1 and has not changed.
-   */
-  function emitRowwise(): void {
-    const body = k.body;
-    if (!body) throw new Error(`${k.name}: rowwise schedule with no parsed body`);
-    const NEG = PAD_LITERAL.negInf;
-    const rowOf = (m: number) => `rowBase + ty * ${u(tm)} + ${u(m)}`;
-    const colOf = (n: number) => `nn + tx * ${u(tn)} + ${u(n)}`;
-    const idx = new Map(body.accs.map((a, i) => [a.name, i]));
-    const slot = (name: string, m: number) => `${name}[${m}]`;
-
-    /** A block expression, as WGSL, for fragment cell (m, n) with `v` already loaded. */
-    const blockExpr = (e: Expr, m: number): string => {
-      switch (e.k) {
-        case "tile":   return `v`;
-        case "unary":  return e.op === "sq"
-          ? `(${blockExpr(e.a, m)} * ${blockExpr(e.a, m)})`
-          : `exp(${blockExpr(e.a, m)})`;
-        case "rowOp": {
-          const a = blockExpr(e.a, m), r = rowExpr(e.row, m);
-          return e.op === "sub" ? `(${a} - ${r})` : e.op === "mul" ? `(${a} * ${r})` : `(${a} / ${r})`;
-        }
-      }
-    };
-
-    /** A row expression, as WGSL, for the m-th row this invocation owns. */
-    const rowExpr = (r: RowExpr, m: number): string => {
-      switch (r.k) {
-        case "acc":  return slot(r.name, m);
-        case "mean": return `(${rowExpr(r.a, m)} / ${nExtent}.0)`;
-        case "rstd": {
-          const mu = rowExpr(r.mean, m);
-          return `inverseSqrt((${rowExpr(r.sumSq, m)} / ${nExtent}.0) - ${mu} * ${mu} + ${r.eps})`;
-        }
-      }
-    };
-
-    const nExtent = rk.extent, nBlock = bn;
-
-    // ---- accumulators
-    for (const acc of body.accs) {
-      P(`var ${acc.name} : array<${ty}, ${tm}>;`, 1);
-      const init = acc.init === "negInf" ? NEG : PAD_LITERAL[acc.init];
-      for (let m = 0; m < tm; m++) P(`${slot(acc.name, m)} = ${init};`, 1);
-    }
-    P();
-
-    // ---- steps, in source order
-    for (const step of body.steps) {
-      if (step.k === "derived") {
-        // A derived row value is computed once per row this invocation owns,
-        // after the passes that produced its inputs and before whatever uses it.
-        P(`var ${step.name} : array<${ty}, ${tm}>;`, 1);
-        for (let m = 0; m < tm; m++) P(`${slot(step.name, m)} = ${rowExpr(step.expr, m)};`, 1);
-        P();
-        continue;
-      }
-      if (step.k === "storeFrag") {
-        // A row-wise body stores one cell at a time inside a pass; a whole-fragment
-        // store belongs to the matmul schedule. Reaching here means the parser and
-        // the schedule choice disagree, which is a compiler bug rather than a user
-        // error, so it says so.
-        throw new Error(
-          `${k.name}: a row-wise body produced a whole-fragment store — ` +
-          `the parser and the schedule classification disagree`);
-      }
-      const pass = step;
-      P(`for (var nn : u32 = 0u; nn < ${u(nExtent)}; nn = nn + ${u(nBlock)}) {`, 1);
-      for (let m = 0; m < tm; m++) {
-        for (let n = 0; n < tn; n++) {
-          P(`{`, 2);
-          P(`let row = ${rowOf(m)};`, 3);
-          P(`let col = ${colOf(n)};`, 3);
-          if (pass.k === "reduce") {
-            // Every update in a pass reads the same cell once.
-            const folds = pass.updates.filter((x) => x.k === "fold");
-            emitLoad(`let v`, bindingOf(folds[0].value), "row", "col", 3);
-            for (const up of folds) {
-              const val = blockExpr(up.value, m);
-              P(up.op === "max"
-                ? `${slot(up.acc, m)} = max(${slot(up.acc, m)}, ${val});`
-                : `${slot(up.acc, m)} = ${slot(up.acc, m)} + ${val};`, 3);
-            }
-          } else {
-            emitLoad(`let v`, bindingOf(pass.value), "row", "col", 3);
-            emitStore(byName(pass.binding), "row", "col", blockExpr(pass.value, m), 3);
-          }
-          P(`}`, 2);
-        }
-      }
-      P(`}`, 1);
-
-      // A reduce pass ends by combining each accumulator across the lanes that
-      // share a row. How many accumulators there are is a property of the body.
-      if (pass.k === "reduce") {
-        const touched = [...new Set(pass.updates.map((x) => x.acc))];
-        for (const nm of touched) {
-          for (let m = 0; m < tm; m++) {
-            P(`scratch[(ty * ${u(tm)} + ${u(m)}) * ${u(wgx)} + tx] = ${slot(nm, m)};`, 1);
-          }
-          P(`workgroupBarrier();`, 1);
-          const u0 = pass.updates.find((x) => x.acc === nm)!;
-          const op = u0.k === "fold" ? u0.op : "sum";
-          const init = op === "max" ? NEG : "0.0";
-          for (let m = 0; m < tm; m++) {
-            P(`{`, 1);
-            P(`var r = ${init};`, 2);
-            P(`for (var j : u32 = 0u; j < ${u(wgx)}; j = j + 1u) {`, 2);
-            const cell = `scratch[(ty * ${u(tm)} + ${u(m)}) * ${u(wgx)} + j]`;
-            P(op === "max" ? `r = max(r, ${cell});` : `r = r + ${cell};`, 3);
-            P(`}`, 2);
-            P(`${slot(nm, m)} = r;`, 2);
-            P(`}`, 1);
-          }
-          P(`workgroupBarrier();`, 1);
-        }
-      }
-      P();
-    }
+  /** Every fragment cell, as an assignment of a slice index to each accumulate axis. */
+  const cells: Record<string, number>[] = [{}];
+  for (const s of slices) {
+    const next: Record<string, number>[] = [];
+    for (const c of cells) for (let i = 0; i < s.slice; i++) next.push({ ...c, [s.axis]: i });
+    cells.length = 0; cells.push(...next);
   }
+  const cellIndex = (c: Record<string, number>) =>
+    slices.reduce((n, s) => n * s.slice + c[s.axis], 0);
+  /** The value name an operand contributes at this cell — projected onto its own axes. */
+  const operandVal = (bindingName: string, c: Record<string, number>) => {
+    const bd = byName(bindingName);
+    const own = bd.axes.filter((a) => sliceOf.has(a)).map((a) => c[a]);
+    return `v_${bindingName}${own.map((i) => `_${i}`).join("")}`;
+  };
+  /** Global coordinate of an accumulate axis at slice index i. */
+  const accCoord = (axis: string, i: number) => {
+    const s = sliceOf.get(axis)!;
+    return `base_${axis} + ${s.lane === "x" ? "tx" : "ty"} * ${u(s.slice)} + ${u(i)}`;
+  };
 
-  /** The binding a block expression ultimately reads from. */
-  function bindingOf(e: Expr): BindingIR {
-    while (e.k !== "tile") e = e.k === "unary" ? e.a : e.a;
-    return byName(e.binding);
-  }
-  function byName(n: string): BindingIR {
-    const bd = k.bindings.find((x) => x.name === n);
-    if (!bd) throw new Error(`no binding named ${n}`);
-    return bd;
-  }
-
+  // ---- header ---------------------------------------------------------------
   P(`// Generated by tessera from a TypeScript kernel. Do not edit.`);
   P(`//`);
-  P(`//   ${k.name}: ${k.grid.map((x) => `${x.name}=${x.extent}`).join(" x ")} x ${rk.name}=${rk.extent}`);
-  P(`//   schedule ${k.schedule}   workgroup ${wgx}x${wgy}x1   fragment ${tm}x${tn}`);
+  P(`//   ${k.name}   accumulate (${plan.accumulate.join(", ")})   contract ${plan.contract}`);
+  P(`//   lanes ${slices.map((s) => `${s.axis}->${s.lane}(${s.slice})`).join(" ")}` +
+    `${plan.lanes.contractLanes.length ? `  ${plan.contract}->${plan.lanes.contractLanes.join("")}` : ""}` +
+    `   fragment ${frag}   ${seqDepth} sequential steps`);
+  P(`//   staged: ${staged.map((o) => o.binding).join(", ") || "nothing — no operand is reused"}` +
+    `   workgroup ${plan.workgroupElements * 4} B`);
   P(`//   ${k.maskedLoads.length ? `masked: ${k.maskedLoads.join(" ")}   pad ${k.pad} (${PAD})` : "no masks: every axis divides its block"}`);
   P();
 
-  // ---- bindings ------------------------------------------------------------
-  // The access mode comes from the surface. `input()` is read-only and says so.
   for (const [i, bd] of k.bindings.entries()) {
-    const mode = bd.mode === "read" ? "read" : "read_write";
-    P(`@group(0) @binding(${i}) var<storage, ${mode}> ${bd.name} : array<${ty}>;`);
+    P(`@group(0) @binding(${i}) var<storage, ${bd.mode === "read" ? "read" : "read_write"}> ${bd.name} : array<${ty}>;`);
   }
   P();
-  if (rowwise) {
-    // No operand staging: every element is read once per pass, so staging buys
-    // nothing. What IS needed is scratch for the cross-lane row reduction —
-    // one slot per row per lane.
-    P(`var<workgroup> scratch : array<${ty}, ${bm * wgx}>;   // rows x lanes`);
-  } else {
-    P(`var<workgroup> As : array<${ty}, ${bm * bk}>;`);
-    P(`var<workgroup> Bs : array<${ty}, ${bk * bn}>;`);
+  for (const o of staged) P(`var<workgroup> ${stageName(o.binding)} : array<${ty}, ${o.stagedElements}>;`);
+  if (!staged.length && plan.lanes.needsCombine) {
+    P(`var<workgroup> scratch : array<${ty}, ${plan.workgroupElements}>;   // fragment x lanes`);
   }
   P();
 
   P(`@compute @workgroup_size(${wgx}, ${wgy}, 1)`);
   P(`fn ${k.name}(@builtin(workgroup_id)        wg  : vec3<u32>,`);
   P(`${" ".repeat(k.name.length + 3)}@builtin(local_invocation_id) lid : vec3<u32>) {`);
-
-  P(rowwise ? `let blockRow = wg.x;` : `let blockRow = wg.y;`, 1);
-  if (!rowwise) P(`let blockCol = wg.x;`, 1);
-  P(`let tx  = lid.x;`, 1);
-  P(`let ty  = lid.y;`, 1);
-  if (!rowwise) P(`let tid = ty * ${u(wgx)} + tx;`, 1);
-  P(`let rowBase = blockRow * ${u(bm)};`, 1);
-  if (!rowwise) P(`let colBase = blockCol * ${u(bn)};`, 1);
+  P(`let tx = lid.x;`, 1);
+  P(`let ty = lid.y;`, 1);
+  P(`let tid = ty * ${u(wgx)} + tx;`, 1);
+  // Dispatch is [x, y, z]; accumulate axes were listed grid-order, and derive()
+  // maps the last one to x for two axes and the first for one.
+  accumulate.forEach((a, i) => {
+    const wgComp = accumulate.length === 2 ? (i === 0 ? "wg.y" : "wg.x") : "wg.x";
+    P(`let base_${a.name} = ${wgComp} * ${u(a.block)};`, 1);
+  });
   P();
 
-  if (rowwise) { emitRowwise(); P(`}`); return L.join("\n") + "\n"; }
-
-  P(`var acc : array<${ty}, ${nacc}>;`, 1);
-  P();
-
-  // ---- reduction over blocks ----------------------------------------------
-  P(`for (var kk : u32 = 0u; kk < ${u(rk.extent)}; kk = kk + ${u(bk)}) {`, 1);
-
-  // stage A
-  P(`for (var i : u32 = tid; i < ${u(bm * bk)}; i = i + ${u(threads)}) {`, 2);
-  P(`let r  = i / ${u(bk)};`, 3);
-  P(`let cc = i % ${u(bk)};`, 3);
-  P(`let gr = rowBase + r;`, 3);
-  P(`let gc = kk + cc;`, 3);
-  emitLoad("As[i]", a, "gr", "gc", 3);
-  P(`}`, 2);
-
-  // stage B
-  P(`for (var i : u32 = tid; i < ${u(bk * bn)}; i = i + ${u(threads)}) {`, 2);
-  P(`let r  = i / ${u(bn)};`, 3);
-  P(`let cc = i % ${u(bn)};`, 3);
-  P(`let gr = kk + r;`, 3);
-  P(`let gc = colBase + cc;`, 3);
-  emitLoad("Bs[i]", b, "gr", "gc", 3);
-  P(`}`, 2);
-
-  P(`workgroupBarrier();`, 2);
-  P();
-
-  // ---- accumulate ----------------------------------------------------------
-  P(`for (var k : u32 = 0u; k < ${u(bk)}; k = k + 1u) {`, 2);
-  for (let m = 0; m < tm; m++) {
-    P(`let af${m} = As[(ty * ${u(tm)} + ${u(m)}) * ${u(bk)} + k];`, 3);
+  // ---- accumulators ----------------------------------------------------------
+  for (const acc of body.accs) {
+    P(`var ${acc.name} : array<${ty}, ${frag}>;`, 1);
+    const init = PAD_LITERAL[acc.init];
+    for (let c = 0; c < frag; c++) P(`${acc.name}[${c}] = ${init};`, 1);
   }
-  for (let n = 0; n < tn; n++) {
-    P(`let bf${n} = Bs[k * ${u(bn)} + (tx * ${u(tn)} + ${u(n)})];`, 3);
+  P();
+
+  // ---- the contraction --------------------------------------------------------
+  const reduceSteps = body.steps.filter((s) => s.k === "reduce");
+  for (const step of reduceSteps) emitContractionPass(step.updates);
+
+  function emitContractionPass(updates: readonly Update[]): void {
+    P(`for (var ${T_("cb")} : u32 = 0u; ${T_("cb")} < ${u(contract.extent)}; ${T_("cb")} = ${T_("cb")} + ${u(contractBlock)}) {`, 1);
+
+    for (const o of staged) {
+      const bd = byName(o.binding);
+      const dims = bd.axes.map((a) => axisOf.get(a)!.block);
+      P(`for (var ${T_("i")} : u32 = tid; ${T_("i")} < ${u(o.stagedElements)}; ${T_("i")} = ${T_("i")} + ${u(wgx * wgy)}) {`, 2);
+      P(`let ${T_("r")} = ${T_("i")} / ${u(dims[1])};`, 3);
+      P(`let ${T_("cc")} = ${T_("i")} % ${u(dims[1])};`, 3);
+      const coord = (axis: string, local: string) =>
+        axis === contract.name ? `${T_("cb")} + ${local}` : `base_${axis} + ${local}`;
+      P(`let ${T_("gr")} = ${coord(bd.axes[0], T_("r"))};`, 3);
+      P(`let ${T_("gc")} = ${coord(bd.axes[1], T_("cc"))};`, 3);
+      emitLoad(`${stageName(o.binding)}[${T_("i")}]`, bd, T_("gr"), T_("gc"), 3);
+      P(`}`, 2);
+    }
+    if (staged.length) { P(`workgroupBarrier();`, 2); P(); }
+
+    P(`for (var ${T_("s")} : u32 = 0u; ${T_("s")} < ${u(seqDepth)}; ${T_("s")} = ${T_("s")} + 1u) {`, 2);
+    // The contract coordinate this invocation handles at this step. When lanes split
+    // the contraction each lane takes a contiguous run, which keeps the reads coalesced.
+    const laneId = plan.lanes.contractLanes.includes("x") ? "tx" : "ty";
+    P(plan.lanes.needsCombine
+      ? `let ${T_("ci")} = ${T_("cb")} + ${laneId} * ${u(seqDepth)} + ${T_("s")};`
+      : `let ${T_("ci")} = ${T_("cb")} + ${T_("s")};`, 3);
+
+    // One read per operand per combination of the accumulate axes it mentions.
+    for (const o of plan.operands) {
+      const bd = byName(o.binding);
+      const ownAxes = bd.axes.filter((a) => sliceOf.has(a));
+      const combos: Record<string, number>[] = [{}];
+      for (const a of ownAxes) {
+        const n: Record<string, number>[] = [];
+        for (const c of combos) for (let i = 0; i < sliceOf.get(a)!.slice; i++) n.push({ ...c, [a]: i });
+        combos.length = 0; combos.push(...n);
+      }
+      for (const c of combos) {
+        const name = operandVal(o.binding, c);
+        if (o.staged) {
+          const dims = bd.axes.map((a) => axisOf.get(a)!.block);
+          const local = bd.axes.map((a) =>
+            a === contract.name
+              ? `${T_("ci")} - ${T_("cb")}`
+              : `${sliceOf.get(a)!.lane === "x" ? "tx" : "ty"} * ${u(sliceOf.get(a)!.slice)} + ${u(c[a])}`);
+          P(`let ${name} = ${stageName(o.binding)}[(${local[0]}) * ${u(dims[1])} + (${local[1]})];`, 4);
+        } else {
+          const g0 = bd.axes[0] === contract.name ? T_("ci") : accCoord(bd.axes[0], c[bd.axes[0]]);
+          const g1 = bd.axes[1] === contract.name ? T_("ci") : accCoord(bd.axes[1], c[bd.axes[1]]);
+          emitLoad(`let ${name}`, bd, `(${g0})`, `(${g1})`, 4);
+        }
+      }
+    }
+    // Update every fragment cell. Each cell picks the operand value belonging to
+    // its own slice indices, projected onto that operand's axes — which is what
+    // makes an outer product and a fold the same code.
+    for (const c of cells) {
+      const i = cellIndex(c);
+      for (const up of updates) {
+        if (up.k === "mma") {
+          P(`${up.acc}[${i}] = ${up.acc}[${i}] + ` +
+            `${blockExpr(up.a, c)} * ${blockExpr(up.b, c)};`, 4);
+        } else {
+          const v = blockExpr(up.value, c);
+          P(up.op === "max"
+            ? `${up.acc}[${i}] = max(${up.acc}[${i}], ${v});`
+            : `${up.acc}[${i}] = ${up.acc}[${i}] + ${v};`, 4);
+        }
+      }
+    }
+    P(`}`, 2);
+    if (staged.length) P(`workgroupBarrier();`, 2);
+    P(`}`, 1);
+    P();
+
+    if (plan.lanes.needsCombine) emitCombine(updates);
   }
-  for (let m = 0; m < tm; m++) {
-    for (let n = 0; n < tn; n++) {
-      const i = m * tn + n;
-      P(`acc[${i}] = acc[${i}] + af${m} * bf${n};`, 3);
+
+  /**
+   * Combine the lane partials. Needed exactly when the contract axis was given a
+   * lane dimension, which the plan decided and this does not second-guess.
+   */
+  function emitCombine(updates: readonly Update[]): void {
+    const accs = [...new Set(updates.map((x) => x.acc))];
+    // The lane dimension the contraction was split across, and the other one.
+    const dim = plan.lanes.contractLanes.includes("x") ? "x" : "y";
+    const laneId = dim === "x" ? "tx" : "ty";
+    const other = dim === "x" ? "ty" : "tx";
+    const width = laneW[dim];
+    for (const nm of accs) {
+      const u0 = updates.find((x) => x.acc === nm)!;
+      const op = u0.k === "fold" ? u0.op : "sum";
+      const init = op === "max" ? PAD_LITERAL.negInf : "0.0";
+      for (let c = 0; c < frag; c++) {
+        P(`scratch[(${other} * ${u(frag)} + ${u(c)}) * ${u(width)} + ${laneId}] = ${nm}[${c}];`, 1);
+      }
+      P(`workgroupBarrier();`, 1);
+      for (let c = 0; c < frag; c++) {
+        P(`{`, 1);
+        P(`var ${T_("r")} = ${init};`, 2);
+        P(`for (var ${T_("j")} : u32 = 0u; ${T_("j")} < ${u(width)}; ${T_("j")} = ${T_("j")} + 1u) {`, 2);
+        const cell = `scratch[(${other} * ${u(frag)} + ${u(c)}) * ${u(width)} + ${T_("j")}]`;
+        P(op === "max" ? `${T_("r")} = max(${T_("r")}, ${cell});` : `${T_("r")} = ${T_("r")} + ${cell};`, 3);
+        P(`}`, 2);
+        P(`${nm}[${c}] = ${T_("r")};`, 2);
+        P(`}`, 1);
+      }
+      P(`workgroupBarrier();`, 1);
+    }
+    P();
+  }
+
+  /** A block-valued expression at one fragment cell. */
+  function blockExpr(e: Expr, c: Record<string, number>): string {
+    switch (e.k) {
+      case "tile":  return operandVal(e.binding, c);
+      case "unary": return e.op === "sq"
+        ? `(${blockExpr(e.a, c)} * ${blockExpr(e.a, c)})`
+        : `exp(${blockExpr(e.a, c)})`;
+      case "rowOp": {
+        const a = blockExpr(e.a, c), r = rowExpr(e.row, c);
+        return e.op === "sub" ? `(${a} - ${r})` : e.op === "mul" ? `(${a} * ${r})` : `(${a} / ${r})`;
+      }
     }
   }
-  P(`}`, 2);
-
-  P();
-  P(`workgroupBarrier();`, 2);
-  P(`}`, 1);
-  P();
-
-  // ---- relu + store --------------------------------------------------------
-  for (let m = 0; m < tm; m++) {
-    P(`let row${m} = rowBase + ty * ${u(tm)} + ${u(m)};`, 1);
-    for (let n = 0; n < tn; n++) {
-      const i = m * tn + n;
-      P(`let col${i} = colBase + tx * ${u(tn)} + ${u(n)};`, 1);
-      // relu as a comparison + select, matching the MLIR backend exactly:
-      // `max()` there lowered with NaN-propagating semantics that naga rejects,
-      // and this form is also what the CPU oracle computes.
-      const val = `select(0.0, acc[${i}], acc[${i}] > 0.0)`;
-      emitStore(c, `row${m}`, `col${i}`, val, 1);
+  function rowExpr(r: RowExpr, c: Record<string, number>): string {
+    switch (r.k) {
+      case "acc":  return `${r.name}[${cellIndex(c)}]`;
+      case "mean": return `(${rowExpr(r.a, c)} / ${contract.extent}.0)`;
+      case "rstd": {
+        const mu = rowExpr(r.mean, c);
+        return `inverseSqrt((${rowExpr(r.sumSq, c)} / ${contract.extent}.0) - ${mu} * ${mu} + ${r.eps})`;
+      }
     }
+  }
+  function fragExpr(f: FragExpr, c: Record<string, number>): string {
+    return f.k === "acc" ? `${f.name}[${cellIndex(c)}]`
+      : `select(0.0, ${fragExpr(f.a, c)}, ${fragExpr(f.a, c)} > 0.0)`;
+  }
+
+  // ---- derived row values, then the store ------------------------------------
+  for (const st of body.steps) {
+    if (st.k !== "derived") continue;
+    P(`var ${st.name} : array<${ty}, ${frag}>;`, 1);
+    for (const c of cells) P(`${st.name}[${cellIndex(c)}] = ${rowExpr(st.expr, c)};`, 1);
+    P();
+  }
+
+  // Whether the store walks the contraction is a property of the output's axes:
+  // if the output is indexed BY the contract axis it must, and if it is not it
+  // writes the fragment once. Nobody chooses this either.
+  const storeWalksContraction = out.axes.includes(contract.name);
+  const storeStep = body.steps.find((x) => x.k === "store" || x.k === "storeFrag");
+  if (!storeStep) throw new Error(`${k.name}: no store`);
+
+  if (storeWalksContraction && storeStep.k === "store") {
+    P(`for (var ${T_("cb")} : u32 = 0u; ${T_("cb")} < ${u(contract.extent)}; ${T_("cb")} = ${T_("cb")} + ${u(contractBlock)}) {`, 1);
+    P(`for (var ${T_("s")} : u32 = 0u; ${T_("s")} < ${u(seqDepth)}; ${T_("s")} = ${T_("s")} + 1u) {`, 2);
+    const laneId = plan.lanes.contractLanes.includes("x") ? "tx" : "ty";
+    P(plan.lanes.needsCombine
+      ? `let ${T_("ci")} = ${T_("cb")} + ${laneId} * ${u(seqDepth)} + ${T_("s")};`
+      : `let ${T_("ci")} = ${T_("cb")} + ${T_("s")};`, 3);
+    for (const o of plan.operands) {
+      const bd = byName(o.binding);
+      for (const c of cells) {
+        const g0 = bd.axes[0] === contract.name ? T_("ci") : accCoord(bd.axes[0], c[bd.axes[0]]);
+        const g1 = bd.axes[1] === contract.name ? T_("ci") : accCoord(bd.axes[1], c[bd.axes[1]]);
+        emitLoad(`let ${operandVal(o.binding, c)}`, bd, `(${g0})`, `(${g1})`, 4);
+      }
+    }
+    for (const c of cells) {
+      const g0 = out.axes[0] === contract.name ? T_("ci") : accCoord(out.axes[0], c[out.axes[0]]);
+      const g1 = out.axes[1] === contract.name ? T_("ci") : accCoord(out.axes[1], c[out.axes[1]]);
+      emitStore(out, `(${g0})`, `(${g1})`, blockExpr(storeStep.value, c), 4);
+    }
+    P(`}`, 2);
+    P(`}`, 1);
+  } else if (storeStep.k === "storeFrag") {
+    for (const c of cells) {
+      emitStore(out, `(${accCoord(out.axes[0], c[out.axes[0]])})`,
+                `(${accCoord(out.axes[1], c[out.axes[1]])})`, fragExpr(storeStep.value, c), 1);
+    }
+  } else {
+    throw new Error(`${k.name}: the store's form and the output's axes disagree`);
   }
 
   P(`}`);

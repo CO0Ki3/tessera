@@ -197,31 +197,31 @@ for (const [entry, label, wantMasks] of [
 // ---- 2d. the softmax emitter contains no masking of its own ----------------
 // The claim under test in docs/004: a second schedule reuses the access layer
 // rather than re-deriving where masks go. Measured on the source, not asserted.
-console.log("\nthe row-wise schedule");
+console.log("\none emitter");
 {
   const src = readFileSync("src/emit-wgsl.ts", "utf8");
-  const soft = src.slice(src.indexOf("function emitRowwise"), src.indexOf("/** The binding a block"));
-  const body = soft.length > 0 ? soft : src;
-  // The MASKING primitives specifically. A loop bound is not a mask: the softmax
-  // schedule legitimately writes `nn < <reduce extent>` to know how far to
-  // iterate, and an earlier version of this check flagged those, which would
-  // have been a false positive rather than a finding. What must be absent is the
-  // machinery that decides WHERE a guard goes and what it compares against:
-  // select/min (the clamp-and-select load), and any call to guards() or ragged().
-  const hits = ["select(", "min(", "ragged(", "guards("]
-    .map((k) => [k, body.split(k).length - 1]);
-  const total = hits.reduce((n, [, c]) => n + c, 0);
-  if (soft.length === 0) {
-    bad("could not locate emitRowwise in emit-wgsl.ts");
-  } else if (total === 0) {
-    ok(`the row-wise schedule — which serves BOTH softmax and layernorm — contains ` +
-       `no masking or indexing logic ` +
-       `(${(soft.match(/emitLoad\(/g) ?? []).length} emitLoad, ` +
-       `${(soft.match(/emitStore\(/g) ?? []).length} emitStore)`);
+  // There is one emitter now, so the claim is sharper than "the second schedule
+  // adds no masking": the masking primitives must appear ONLY in the access layer.
+  // select( and min( each occur once, both inside emitLoad.
+  // Count the MASKING select specifically. `select` is also how relu is emitted,
+  // and an earlier version of this check counted that too -- the same false
+  // positive as counting loop bounds as masks. The masking one substitutes the
+  // pad, so it is the one that mentions PAD.
+  const sel = src.split("select(${PAD}").length - 1;
+  const min = src.split("[min(").length - 1;
+  if (sel === 1 && min === 1) {
+    ok(`the pad is substituted from exactly one place, and the clamp from one`);
   } else {
-    bad(`the row-wise schedule contains masking logic: ` +
-        hits.filter(([, c]) => c > 0).map(([k, c]) => `${k} x${c}`).join(", "));
+    bad(`masking is emitted from ${sel} pad-select and ${min} clamp sites; expected 1 each`);
   }
+
+  // And no schedule branches on a kernel family.
+  const families = ["softmax", "layernorm", "matmul"].filter((f) => {
+    const re = new RegExp(`(===|!==)\\s*["'\`]${f}`, "i");
+    return re.test(src);
+  });
+  if (families.length === 0) ok("no branch on a kernel family name");
+  else bad(`emit-wgsl.ts branches on: ${families.join(", ")}`);
 }
 
 // ---- 3. our own source ----------------------------------------------------
