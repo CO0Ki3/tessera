@@ -251,6 +251,58 @@ MLIR moves to a later experiment. That decision is cheap in week 0 and expensive
   Keep every checker interaction behind a thin `TesseraProgram` façade (~6 methods) so the eventual
   port is a day, not a rewrite. Do this in week 2, not week 20.
 
+## 6a. Standing invariant: generated code must approach hand-written
+
+**This is the compiler's job, not a nice-to-have.** The user's alternative to
+tessera is writing WGSL by hand. Every percent the generated kernel gives away is
+subtracted directly from the reason to use the compiler at all — a kernel
+compiler that settles at 64% of hand-written has not shipped an unfinished
+feature, it has shipped a failed value proposition. Triton's credibility rests on
+reaching ~90% of hand-tuned on real shapes; that is the standard this is measured
+against, not "correct and somewhat slower".
+
+So it is recorded here as an invariant rather than a task, because a task gets
+closed and an invariant keeps being checked:
+
+> **The canonical kernel, generated, must reach at least 80% of the hand-written
+> kernel's throughput on the same machine in the same session.**
+> Currently **64%** (7 quanta vs 11). Not met.
+
+Now that `spike/wgsl-baseline/measure.js` produces a stable figure (spread of one
+quantum, reproducible across sessions), this is CI-checkable rather than a matter
+of opinion, and it should be re-checked on every codegen change.
+
+### What the gap probably is, and the experiment that decides it
+
+The three refuted hypotheses (§ spike/mlir-spirv README) were all "tessera's
+codegen makes a worse choice". None survived. The remaining shape of the problem
+is different: the generated path crosses **four translation boundaries** that the
+hand-written path does not —
+
+```
+hand      WGSL ------------------------------------> Tint -> MSL
+tessera   IR -> MLIR -> SPIR-V -> naga -> WGSL -----> Tint -> MSL
+```
+
+— and information can be lost at each one. If that is what the 1.57x is, no
+amount of improving our MLIR will close it, and the fix is to shorten the chain.
+
+**The decisive experiment is already scoped**: the direct WGSL printer, planned
+as week-4 insurance and as the third oracle. Same front end, same IR, two
+backends. Run both through `measure.js`:
+
+- direct printer reaches ~7 quanta → the tax is the MLIR chain, and the printer
+  stops being insurance and becomes the performance path
+- direct printer also lands at ~11 quanta → the tax is our IR and codegen
+  decisions, and MLIR is exonerated
+
+Either answer is worth having, and it is a much sharper question than the
+WGSL-level guessing that produced three refutations.
+
+**Why it is not being chased right now:** the ragged-axis work changes codegen —
+masks appear in the inner loop and the store — so anything tuned before it lands
+gets re-tuned after. Sequencing, not priority.
+
 ## 7. Deferred, explicitly
 
 Whole-tensor façade (v1, ~2-3 weeks) · dynamic shapes · autotuning (the legal tile space is finite:
