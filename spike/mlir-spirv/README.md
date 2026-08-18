@@ -207,47 +207,47 @@ unstructured `loop`/`continuing` with `phi_` variables, and Tint has to
 re-structurize it — 374 lines against 118 for the same kernel. On a
 compile-in-the-browser story that cost is on the critical path.
 
-**Runtime: ~1.5–1.6× slower, and this now survives scrutiny.** An earlier
-revision of this file said the gap was not measurable. That was too conservative,
-and working out why produced the more useful finding.
+**Runtime: unknown, and the attempt to establish it is the more useful finding.**
 
-Chrome quantizes `timestamp-query` results. Every GPU timing this harness has
-produced — eight samples across four sessions — is an **exact multiple of
-2^16 ns = 65.536 µs**:
-
-```
-printed ms   ns        quanta
-     1.311   1310720       20
-     2.032   2031616       31
-     1.901   1900544       29
-     2.949   2949120       45
-     1.835   1835008       28
-     1.769   1769472       27
-     1.573   1572864       24
-     1.049   1048576       16
-```
-
-Eight for eight is not coincidence. So the resolution floor is 65.536 µs, not
-whatever precision the printed milliseconds imply, and the documented "55%
-variance between identical runs" was genuine variance rather than quantization
-noise.
-
-That reframes the comparison rather than invalidating it. Both kernels run back
-to back inside one session, so a **paired** comparison controls for clock and
-thermal state in a way cross-session numbers cannot — and both paired
-observations agree:
+An earlier revision of this file claimed the gap was ~1.5–1.6×, "established by
+paired within-run comparison". **That claim was wrong and is retracted.** The
+reasoning behind it — that two kernels run back to back share clock and thermal
+state, so a paired comparison controls for drift — does not hold. A later session
+produced this, in run order:
 
 ```
-hand 28q vs tessera 45q   = 1.61x
-hand 16q vs tessera 24q   = 1.50x
+hand-written              read         27q
+tessera        optimised  read_write   27q
+hand-written              read_write   10q
+tessera        optimised  read         19q
+tessera        --no-opt   read_write   22q
 ```
 
-Separations of 17 and 8 quanta are far outside ±1 quantum, so the gap is real at
-this resolution. What is *not* established is why, or whether it survives tuning:
-plausible causes are naga's unstructured `loop`/`continuing` output defeating
-some optimisation Tint would otherwise apply, or the extra `bitcast<i32>`
-comparisons in the generated loop bounds. Both are investigable, neither is
-urgent while the kernel is untuned on both sides.
+which reads as "making the hand kernel worse made it 2.7× faster". It did not.
+And the same unoptimised shader measured **45q in one session and 22q in
+another** — a 2× spread on identical code. Position in the dispatch sequence
+moved the numbers more than the kernels did, because the GPU ramps its clocks as
+work arrives. The two paired samples that had agreed (1.61× and 1.50×) were a
+coincidence of two samples; a third refuted them at 1.00×.
+
+What the method was missing, all of which `measure.js` now does:
+
+- **warm-up** — the first dispatches run at a low clock state
+- **repetition** — one sample per kernel measures the machine, not the kernel
+- **interleaving** — running all of A then all of B lets drift masquerade as a
+  difference between A and B; round-robin spreads it evenly
+- **minimum, not mean** — for fixed work the noise is one-sided, so the floor
+  converges on the kernel while the average tracks how busy the machine was
+
+The ecosystem research picked a measurement layer as the highest-leverage support
+project, on the grounds that "the default state of the world is that you will
+measure wrong and confidently ship the wrong codegen". This spike did exactly
+that, in writing, and then had to retract it. The correction is cheap; believing
+the first number would not have been.
+
+**What is not in doubt:** correctness. Every session, without exception, has
+reported the MLIR-derived kernel bit-identical to the hand-written one,
+786432 / 786432, maxAbsDiff 0.
 
 ### Decision table, as originally written
 

@@ -19,9 +19,9 @@ var<private> _builtin_WorkgroupId_1: vec3<u32>;
 var<workgroup> _workgroup_mem_1_: type_5;
 var<workgroup> _workgroup_mem_0_: type_5;
 @group(0) @binding(0) 
-var<storage, read_write> matmul_relu_f32_arg_0_: type_8;
+var<storage, read> matmul_relu_f32_arg_0_: type_8;
 @group(0) @binding(1) 
-var<storage, read_write> matmul_relu_f32_arg_1_: type_11;
+var<storage, read> matmul_relu_f32_arg_1_: type_11;
 @group(0) @binding(2) 
 var<storage, read_write> matmul_relu_f32_arg_2_: type_14;
 

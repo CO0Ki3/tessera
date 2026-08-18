@@ -87,10 +87,34 @@ function main(): void {
   writeFileSync(at(".mlir"), mlir);
   console.log(`  ${at(".mlir")}  ${mlir.split("\n").length} lines`);
 
+  // ---- optimise ----------------------------------------------------------
+  // The emitter deliberately produces naive IR: it recomputes every index
+  // expression at every use, because folding by hand in the emitter is how an
+  // emitter grows a second, worse optimiser inside it. MLIR already has these,
+  // and running them cuts the inner loop from 24 integer ops per iteration to 9
+  // — `(ty*TM+m)*BK` is fully loop-invariant and hoists out entirely, and the
+  // four `k*BN` recomputations CSE into one.
+  //
+  // This is also the clearest answer so far to "is MLIR earning its place":
+  // these passes are free here and would be ours to write otherwise.
+  const OPT_PIPELINE = [
+    "--canonicalize", "--cse", "--loop-invariant-code-motion", "--canonicalize", "--cse",
+  ];
+  const optimise = !args.includes("--no-opt");
+  if (optimise) {
+    const opt = run(MLIR_OPT, [...OPT_PIPELINE, at(".mlir")]);
+    writeFileSync(at(".opt.mlir"), opt);
+    console.log(`  ${at(".opt.mlir")}  ${opt.split("\n").length} lines  ` +
+                `<- canonicalize, cse, licm`);
+  } else {
+    console.log(`  --no-opt: skipping canonicalize/cse/licm`);
+  }
+  const loweringInput = optimise ? at(".opt.mlir") : at(".mlir");
+
   // ---- lower + serialize -------------------------------------------------
   const lowered = run(MLIR_OPT, [
     ATTACH, "--convert-gpu-to-spirv", "--spirv-lower-abi-attrs", "--spirv-update-vce",
-    at(".mlir"),
+    loweringInput,
   ]);
   const spirvMlir = run("python3", [EXTRACT], lowered);
   writeFileSync(at(".spirv.mlir"), spirvMlir);

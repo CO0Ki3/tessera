@@ -208,14 +208,14 @@ Two costs are now on the record, and only one of them is established:
   `phi_` variables (374 lines against 118) and Tint must re-structurize it. On a
   compile-in-the-browser story this is on the critical path, and it is a robust
   signal rather than measurement noise.
-- **Runtime is ~1.5–1.6× slower**, established by paired within-run comparison
-  after working out what the timings actually are. Chrome quantizes
-  `timestamp-query` to **2^16 ns = 65.536 µs** — every one of eight samples across
-  four sessions is an exact multiple — so that is the resolution floor. Both
-  paired observations (17 and 8 quanta apart, far outside ±1 quantum) agree:
-  1.61× and 1.50×. The cause is not established; naga's unstructured
-  `loop`/`continuing` output is the first suspect. Not urgent while both sides
-  are untuned, but no longer an unknown.
+- **Runtime is unknown.** An earlier revision of this section claimed ~1.5–1.6×
+  slower, "established by paired within-run comparison". **Retracted.** A later
+  session measured the two kernels at 1.00×, and the same unoptimised shader at
+  45q and 22q in different sessions — a 2× spread on identical code. GPU clock
+  ramping moves the numbers more than the kernels do, so position in the dispatch
+  sequence was being read as a property of the code. `spike/wgsl-baseline/
+  measure.js` now warms up, repeats, interleaves, and reports the minimum; no
+  performance claim should be made from anything weaker.
 
 A third consequence: the direct WGSL printer scoped as week-4 insurance keeps its
 value regardless, now as the *third oracle*. With the MLIR path bit-exact today,

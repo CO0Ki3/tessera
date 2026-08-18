@@ -50,7 +50,8 @@
 <pre id="log">Ready. Click Run.</pre>
 
 <script type="module">
-import { initDevice, compile, runMatmul } from "./run.js";
+import { initDevice, compile } from "./run.js";
+import { createRunner, measureInterleaved, QUANTUM_NS } from "./measure.js";
 import {
   DIMS, randomF32, matmulReluF32, allClose, summarize,
   dotAbsSum, withinErrorBound, bitExactCount,
@@ -118,89 +119,126 @@ async function main() {
     { key: "hand", file: "./matmul.wgsl", entry: "main", label: "hand-written" },
     { key: "mlir", file: "./matmul-mlir.wgsl", manifest: "./matmul-mlir.json",
       label: "tessera: TS \u2192 MLIR \u2192 WGSL" },
+    // Two-sided probe of the storage access mode (node make-probes.mjs).
+    // A1 makes the fast kernel worse; A2 makes the slow kernel better. If the
+    // gap is the access mode, they move toward each other and meet.
+    { key: "handRW", file: "./probe-hand-rw.wgsl", entry: "main", probe: true,
+      label: "probe A1: hand, inputs read_write" },
+    { key: "mlirRO", file: "./probe-tessera-ro.wgsl", manifest: "./matmul-mlir.json",
+      probe: true, label: "probe A2: tessera, inputs read" },
+    // Probe B: the same tessera kernel built with --no-opt. The default build now
+    // runs canonicalize/cse/licm, which cuts the inner loop from 24 integer ops
+    // per iteration to 9. This is the before.
+    { key: "mlirNoOpt", file: "./probe-tessera-noopt.wgsl", manifest: "./matmul-mlir.json",
+      probe: true, label: "probe B: tessera, --no-opt" },
   ];
 
   const a = randomF32(M * K, 0x1234);
   const b = randomF32(K * N, 0x5678);
   const results = {};
-  const quanta = {};
+  const runners = [];
 
+  // ---- compile everything first -------------------------------------------
+  write("── compile ────────────────────────────────────────");
   for (const v of VARIANTS) {
-    write(`── ${v.label} ${"─".repeat(Math.max(0, 34 - v.label.length))}`);
-
     let source;
     try {
       const res = await fetch(v.file);
       if (!res.ok) throw new Error(`${res.status}`);
       source = await res.text();
     } catch {
-      write(`<span class="warn">skipped</span> — ${v.file} not found`);
-      write("");
+      write(`  ${v.label.padEnd(34)} <span class="warn">skipped</span> (${v.file} not found)`);
       continue;
     }
 
     let entry = v.entry;
     if (v.manifest) {
       const mres = await fetch(v.manifest);
-      if (!mres.ok) {
-        write(`<span class="warn">skipped</span> — ${v.manifest} not found (run: npm run demo)`);
-        write("");
-        continue;
-      }
-      const man = await mres.json();
-      entry = man.entryPoint;
-      write(`manifest   name "${man.name}"  entryPoint "${man.entryPoint}"` +
-            (man.entryPoint !== man.name
-              ? `  <span class="dim">(naga renamed it)</span>` : ""));
+      if (!mres.ok) { write(`  ${v.label.padEnd(34)} <span class="warn">no manifest</span>`); continue; }
+      entry = (await mres.json()).entryPoint;
     }
 
     const t0 = performance.now();
     const { pipeline, messages } = await compile(ctx.device, source, entry, v.key);
-    write(`source ${source.split("\n").length} lines   pipeline ${f(performance.now() - t0)} ms`);
-    for (const m of messages) {
-      write(`<span class="warn">${m.type} ${m.line}:${m.col}</span>  ${m.message}`);
-    }
-
-    const gpu = await runMatmul(ctx, pipeline, a, b, DIMS);
-    results[v.key] = gpu.out;
-    write(`workgroup ${gpu.workgroup.join("x")}   dispatch ${gpu.dispatch.join("x")}   ` +
-          `wgBytes ${gpu.workgroupBytes}`);
-    write(`gpu ${gpu.gpuMs !== null ? f(gpu.gpuMs) + " ms  " + f(gpu.gflopsGpu, 1) + " GFLOP/s" : "(no timestamps)"}` +
-          `   wall ${f(gpu.wallMs)} ms` +
-          (gpu.quanta !== null
-            ? `   <span class="warn">${gpu.quanta} x 65.536us</span>` +
-              `<span class="dim"> quantised — that is the resolution</span>`
-            : ""));
-    quanta[v.key] = gpu.quanta;
-    const s = summarize(gpu.out);
-    write(`output   min ${f(s.min)}  max ${f(s.max)}  mean ${f(s.mean)}  zeros ${s.zeros}  nans ${s.nans}`);
-    write("");
+    for (const m of messages) write(`<span class="warn">${m.type} ${m.line}:${m.col}</span> ${m.message}`);
+    write(`  ${v.label.padEnd(34)} ${String(source.split("\n").length).padStart(4)} lines   ` +
+          `pipeline ${f(performance.now() - t0, 1).padStart(7)} ms`);
+    runners.push({ v, r: createRunner(ctx, pipeline, a, b, DIMS, v.key) });
   }
+  if (!runners.length) throw new Error("nothing compiled");
+  write("");
 
-  const gpu = { out: results.hand ?? results.mlir };
-  if (!gpu.out) throw new Error("no kernel ran");
+  // ---- measure -------------------------------------------------------------
+  // Warm up, repeat, interleave. See measure.js for why all three are required:
+  // the previous single-dispatch method reported the same shader at 45q and 22q
+  // in different sessions, and made a kernel look 2.7x faster for being made
+  // worse. That was clock ramping, not the kernels.
+  const WARMUP = 8, REPS = 25;
+  write("── measure ────────────────────────────────────────");
+  write(`${runners.length} kernels x (${WARMUP} warm-up + ${REPS} timed), interleaved round-robin`);
+  await yieldToPaint();
 
-  // ---- hand vs MLIR, before either meets the oracle ------------------------
+  const stats = await measureInterleaved(runners.map((x) => x.r), { warmup: WARMUP, reps: REPS });
+  write("");
+
+  const q = (k) => stats.get(k)?.minQ ?? null;
+  write(`  ${"kernel".padEnd(34)}  ${"min".padStart(5)} ${"med".padStart(5)} ${"max".padStart(5)}   spread   GFLOP/s`);
+  for (const { v } of runners) {
+    const st = stats.get(v.key);
+    if (!st) { write(`  ${v.label.padEnd(34)}  (no timestamps)`); continue; }
+    const g = 2 * M * N * K / (st.minNs * 1e-9) / 1e9;
+    write(`  ${v.label.padEnd(34)}  ${String(st.minQ).padStart(5)} ${String(st.medianQ).padStart(5)} ` +
+          `${String(st.maxQ).padStart(5)}   ${String(st.spreadQ).padStart(6)}   ${f(g, 1).padStart(7)}` +
+          (st.spreadQ > st.minQ * 0.5 ? `  <span class="warn">noisy</span>` : ""));
+  }
+  write("");
+  write(`<span class="dim">min is the estimator: for fixed work, noise is one-sided — nothing makes a</span>`);
+  write(`<span class="dim">kernel faster than the hardware allows, so the floor converges on the kernel.</span>`);
+  write("");
+
+  // ---- what the numbers say ------------------------------------------------
+  write("── verdict ────────────────────────────────────────");
+  const gap = q("hand") && q("mlir") ? q("mlir") / q("hand") : null;
+  if (gap !== null) {
+    write(`tessera vs hand-written        ${f(gap, 2)}x` +
+          (Math.abs(q("mlir") - q("hand")) <= 1
+            ? `  <span class="dim">(within one quantum — indistinguishable)</span>` : ""));
+  }
+  if (q("mlirNoOpt") && q("mlir")) {
+    const d = q("mlirNoOpt") - q("mlir");
+    write(`canonicalize+cse+licm bought   ${f(q("mlirNoOpt") / q("mlir"), 2)}x   ` +
+          `<span class="dim">(${q("mlirNoOpt")}q → ${q("mlir")}q, ${d >= 0 ? "+" : ""}${d}q)</span>`);
+  }
+  if (q("hand") && q("handRW")) {
+    write(`hand: read → read_write        ${f(q("handRW") / q("hand"), 2)}x`);
+  }
+  if (q("mlir") && q("mlirRO")) {
+    write(`tessera: read_write → read     ${f(q("mlirRO") / q("mlir"), 2)}x`);
+  }
+  write("");
+
+  // ---- correctness, once, after timing -------------------------------------
+  write("── correctness ────────────────────────────────────");
+  for (const { v, r } of runners) results[v.key] = await r.result();
+  for (const { v } of runners) {
+    const s2 = summarize(results[v.key]);
+    if (s2.nans || s2.max === 0) write(`  <span class="bad">${v.label}: nans ${s2.nans} max ${s2.max}</span>`);
+  }
   if (results.hand && results.mlir) {
-    write("── hand-written vs MLIR-derived ───────────────────");
     const same = bitExactCount(results.mlir, results.hand);
-    const c2 = allClose(results.mlir, results.hand, { rtol: 1e-5, atol: 1e-6 });
-    write(`bit-exact   ${same} / ${results.hand.length}  (${(100 * same / results.hand.length).toFixed(4)}%)`);
-    write(`maxAbsDiff  ${c2.maxAbsDiff.toExponential(3)}`);
-    if (quanta.hand && quanta.mlir) {
-      // Both kernels ran back to back in one session, so this comparison
-      // controls for clock and thermal state in a way cross-run numbers cannot.
-      write(`speed       hand ${quanta.hand}q vs tessera ${quanta.mlir}q  ` +
-            `= ${(quanta.mlir / quanta.hand).toFixed(2)}x  ` +
-            `<span class="dim">(paired, ${Math.abs(quanta.mlir - quanta.hand)} quanta apart)</span>`);
-    }
-    if (same === results.hand.length) {
-      write(`<span class="ok">IDENTICAL</span>  the generated kernel computes exactly what the hand-written one does.`);
-    } else {
-      write(`<span class="warn">DIVERGENT</span>  same tile, same order — so this is a codegen difference, not rounding.`);
-    }
-    write("");
+    write(`tessera vs hand-written   bit-exact ${same} / ${results.hand.length}` +
+          (same === results.hand.length
+            ? `  <span class="ok">IDENTICAL</span>` : `  <span class="bad">DIVERGENT</span>`));
   }
+  for (const k of ["handRW", "mlirRO", "mlirNoOpt"]) {
+    if (!results[k]) continue;
+    const base = k === "handRW" ? results.hand : results.mlir;
+    const same = bitExactCount(results[k], base);
+    if (same !== base.length) write(`  <span class="bad">probe ${k} changed the numbers — ignore its timing</span>`);
+  }
+  write("");
+  const gpu = { out: results.hand ?? results.mlir };
+  for (const { r } of runners) r.destroy();
 
   // ---- oracles ------------------------------------------------------------
   // Two references, differing in ONE rounding, plus the error scale. The point
