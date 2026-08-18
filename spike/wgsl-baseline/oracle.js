@@ -396,3 +396,31 @@ export function rowMoments(y, { M, N }) {
   }
   return { mean, varr };
 }
+
+/**
+ * The error scale for a computation whose result can cancel to near zero.
+ *
+ * ULP on the RESULT is the right measure for a transcendental's output — softmax's
+ * exp is inexact and its outputs are all comfortably away from zero. It is the
+ * wrong measure for a difference. layernorm computes `(x - mu) * inv`, and where
+ * `x` happens to sit near `mu` the result is tiny while its error is inherited
+ * from operands of order one. Judging that by ULP on the result reports thousands
+ * of them for an absolute error of 1.6e-9.
+ *
+ * This is the same lesson as the matmul's 912 spurious failures, in a new guise:
+ * there the error scaled with the partial sums rather than the sum, here it scales
+ * with the operands rather than the difference. Choosing the scale correctly is
+ * not the same as loosening the tolerance until it passes.
+ *
+ * So: absolute error against the magnitude the computation actually worked on.
+ */
+export function absErrorAgainstScale(got, want) {
+  let maxAbs = 0, scale = 0, at = -1;
+  for (let i = 0; i < got.length; i++) {
+    const d = Math.abs(got[i] - want[i]);
+    if (d > maxAbs) { maxAbs = d; at = i; }
+    const m = Math.abs(want[i]);
+    if (m > scale) scale = m;
+  }
+  return { maxAbs, scale, ratio: scale > 0 ? maxAbs / scale : maxAbs, at };
+}

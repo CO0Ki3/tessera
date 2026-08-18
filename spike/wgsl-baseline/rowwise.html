@@ -39,8 +39,8 @@
 <script type="module">
 import { initDevice, compile } from "./run.js";
 import { createRunner, measureInterleaved } from "./measure.js";
-import { randomF32, softmaxF32, layernormF32, rowSums, rowMoments,
-         maxUlpDiff, allClose, summarize, bitExactCount } from "./oracle.js";
+import { randomF32, softmaxF32, layernormF32, rowSums, rowMoments, maxUlpDiff,
+         absErrorAgainstScale, allClose, summarize, bitExactCount } from "./oracle.js";
 
 const logEl = document.getElementById("log");
 const btn = document.getElementById("run");
@@ -52,7 +52,7 @@ const f = (x, n = 3) => Number(x).toFixed(n);
 const KERNELS = [
   {
     key: "softmax", file: "./softmax.wgsl", man: "./softmax.json",
-    label: "softmax", identity: "negInf",
+    label: "softmax", identity: "negInf", scale: "ulp",
     why: "the identity for a masked MAX — zero would be right until a tail row was all-negative",
     oracle: (x, d) => softmaxF32(x, d),
     invariant: (y, d) => {
@@ -65,7 +65,7 @@ const KERNELS = [
   },
   {
     key: "layernorm", file: "./layernorm.wgsl", man: "./layernorm.json",
-    label: "layernorm", identity: "zero",
+    label: "layernorm", identity: "zero", scale: "abs",
     why: "a masked lane must contribute nothing to either moment — same axis, same raggedness, different operator",
     oracle: (x, d) => layernormF32(x, d),
     invariant: (y, d) => {
@@ -130,15 +130,36 @@ async function main() {
     const want = K.oracle(x, dims);
     const exact = bitExactCount(got, want);
     const { ulp, index } = maxUlpDiff(got, want);
-    const cmp = allClose(got, want, { rtol: 1e-5, atol: 1e-7 });
+    const abs = absErrorAgainstScale(got, want);
     write(`oracle    bit-exact ${exact} / ${got.length} (${(100*exact/got.length).toFixed(2)}%)   ` +
-          `max ${ulp} ULP   maxRelDiff ${cmp.maxRelDiff.toExponential(2)}`);
-    if (ulp <= 8 && inv.ok) {
-      write(`          <span class="ok">PASS</span>  <span class="dim">within what an inexact ` +
-            `${K.key === "softmax" ? "exp" : "inverseSqrt"} explains; a mask error would move a whole row.</span>`);
+          `max ${ulp} ULP   maxAbsDiff ${abs.maxAbs.toExponential(2)}`);
+
+    // Which scale is meaningful depends on the operation, not on how strict one
+    // feels like being. softmax's outputs are all away from zero, so ULP on the
+    // result is right. layernorm computes (x - mu) * inv, and where x sits near mu
+    // the result cancels to near zero while its error is inherited from operands of
+    // order one — the same lesson as the matmul's 912 spurious failures, where the
+    // error scaled with the partial sums rather than with the sum.
+    let pass, detail;
+    if (K.scale === "ulp") {
+      pass = ulp <= 8;
+      detail = `${ulp} ULP on the result — within what an inexact exp explains`;
     } else {
-      const r = Math.floor(index / N), c = index % N;
-      write(`          <span class="bad">FAIL</span>  worst at [${r}][${c}]  gpu ${got[index]}  cpu ${want[index]}` +
+      // A few ULP at the magnitude the computation worked on.
+      const bound = 8 * Math.pow(2, -24) * abs.scale;
+      pass = abs.maxAbs <= bound;
+      detail = `${abs.maxAbs.toExponential(2)} absolute against a scale of ` +
+               `${abs.scale.toFixed(3)} — ${(abs.maxAbs / abs.scale / Math.pow(2, -24)).toFixed(1)} ` +
+               `ULP at that scale, bound ${bound.toExponential(2)}`;
+    }
+    if (pass && inv.ok) {
+      write(`          <span class="ok">PASS</span>  <span class="dim">${detail}.</span>`);
+      write(`          <span class="dim">A mask error would move a whole row and fail the invariant too.</span>`);
+    } else {
+      const r = Math.floor((K.scale === "ulp" ? index : abs.at) / N);
+      const c = (K.scale === "ulp" ? index : abs.at) % N;
+      write(`          <span class="bad">FAIL</span>  ${detail}`);
+      write(`          worst at [${r}][${c}]  gpu ${got[r*N+c]}  cpu ${want[r*N+c]}` +
             `   <span class="dim">(tail starts at column ${N - (N % 64)})</span>`);
     }
     write("");

@@ -447,3 +447,40 @@ store. Generalising it means giving the body IR a register-fragment accumulator 
 the row vector, which is the same move again and is now the obvious next one. Until that
 happens the honest statement stays two-part — the derivation is general, and the schedule
 vocabulary is two entries, one of which is a parser and one of which is a template.
+
+
+## R9. Verified on hardware — and the error-scale lesson recurred a third time
+
+```
+softmax    invariant  rows sum to 1        [0.999999700, 1.000000246]   PASS
+           oracle     41.37% bit-exact, max 6 ULP                       PASS
+
+layernorm  invariant  mean 0, variance 1   mean [-3.9e-8, 3.3e-8]
+                                           var  [0.999967, 0.999973]    PASS
+           oracle     61.71% bit-exact, max 1783 ULP                    initially FAILED
+```
+
+The invariant passed and the ULP check failed, which is the shape of a measurement
+problem rather than a kernel problem. The worst element was `[748][249]`, where the GPU
+gave `1.2533184e-5` against a reference of `1.2531563e-5` — an absolute difference of
+**1.6e-9** on an output whose range is `[-1.89, 1.87]`.
+
+layernorm computes `(x - mu) * inv`. Where `x` happens to sit near `mu` the result cancels
+to near zero, while its error is inherited from operands of order one. ULP on the result
+then counts thousands of them for an error that is 1.6e-9 in absolute terms.
+
+**This is the third appearance of the same lesson**, and it is worth naming as a rule
+rather than rediscovering:
+
+| kernel | wrong scale | right scale |
+|---|---|---|
+| matmul | `rtol * \|result\|` — 912 spurious failures on near-zero ReLU outputs | `gamma_K * SUM \|a·b\|`, the partial sums |
+| softmax | bit-exactness — `exp` is not correctly rounded | ULP on the result |
+| layernorm | ULP on the result — cancellation makes it tiny | absolute error against the operand magnitude |
+
+The scale is a property of the operations in the kernel. Choosing it correctly is not the
+same as loosening a tolerance until the test passes, and the difference between those two
+is whether you can say in advance which one applies.
+
+With the right scale: `1.6e-9` against a bound of `8 * 2^-24 * 1.888 = 9.0e-7` — inside by
+a factor of about 550.
