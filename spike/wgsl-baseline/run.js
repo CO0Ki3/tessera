@@ -54,8 +54,8 @@ export async function initDevice() {
   };
 }
 
-export async function compile(device, wgslSource) {
-  const module = device.createShaderModule({ code: wgslSource, label: "matmul_relu_f32" });
+export async function compile(device, wgslSource, entryPoint = "main", label = "matmul_relu_f32") {
+  const module = device.createShaderModule({ code: wgslSource, label });
 
   // Surface compilation diagnostics explicitly. A shader that fails to compile
   // still yields a pipeline, and the failure otherwise shows up much later as a
@@ -77,8 +77,8 @@ export async function compile(device, wgslSource) {
 
   const pipeline = await device.createComputePipelineAsync({
     layout: "auto",
-    compute: { module, entryPoint: "main" },
-    label: "matmul_relu_f32",
+    compute: { module, entryPoint },
+    label,
   });
 
   return { module, pipeline, messages };

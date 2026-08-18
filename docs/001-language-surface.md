@@ -172,7 +172,53 @@ fragment-legalization pass is **a convenient textual IR with SPIR-V conversions 
 structured-codegen infrastructure the MLIR dependency was justified by. A direct
 tessera-IR → WGSL printer is ~600 lines and reaches the same v0 milestone far sooner.
 
-**Resolver — the week-0 spike, three days, before any other work:**
+**RESOLVED, partially and in favour of MLIR.** The spike ran (`spike/mlir-spirv/`,
+reproduce with `./run-l0.sh`) and the highest-variance item did not materialise:
+MLIR-emitted SPIR-V — carrying workgroup memory, a barrier and binding
+decorations — passes `spirv-val` and is accepted by naga, producing clean WGSL of
+the same shape as the hand-written baseline. There is **no ingestion wall** on
+this toolchain.
+
+Two things came with it:
+
+- **A codegen rule.** `vector.load` over a scalar-element memref lowers to a
+  `spirv.Bitcast` on a *pointer*, which Logical addressing forbids; it fails
+  `spirv-val` and naga. Modelling the vector as the memref **element type**
+  (`memref<Nxvector<4xf32>>`) is legal all the way to WGSL. So vectorisation is
+  available, and `--no-vector` is a fallback rather than the only option.
+- **The Homebrew bottle is sufficient.** Every per-dialect `*ToSPIRV` pass is
+  present. The *composed* `--convert-to-spirv` is absent, confirming the PR
+  #124301 demotion — which is fine, because the per-dialect passes are exactly
+  where a block-level surface enters.
+
+**L3 then closed it.** The full tiled matmul — `scf.for` with 16 loop-carried
+accumulators, three flat storage buffers, two workgroup staging arrays, real
+index arithmetic and a 4×4 register fragment — lowers through the same chain and
+runs in Chrome **bit-identical to the hand-written kernel: 786432 / 786432,
+maxAbsDiff 0.000e+0**. Since the hand-written kernel is bit-exact against the FMA
+oracle, so is the MLIR-derived one.
+
+**Backend decision: MLIR stays in the v0 pipeline.** The lean going in was away
+from it; the evidence went the other way.
+
+Two costs are now on the record, and only one of them is established:
+
+- **Compile time is clearly worse — 325.9 ms pipeline creation against ~65 ms for
+  the hand-written kernel.** naga emits unstructured `loop`/`continuing` with
+  `phi_` variables (374 lines against 118) and Tint must re-structurize it. On a
+  compile-in-the-browser story this is on the critical path, and it is a robust
+  signal rather than measurement noise.
+- **Runtime is not yet measurable.** The numbers suggest ~1.6× slower, but §4a's
+  companion finding — two runs of an identical kernel differing by 55% — means a
+  single-dispatch comparison between implementations proves nothing. This needs a
+  measurement layer before it can be argued about.
+
+A third consequence: the direct WGSL printer scoped as week-4 insurance keeps its
+value regardless, now as the *third oracle*. With the MLIR path bit-exact today,
+any future divergence localizes to front end vs. conversion chain in one
+comparison instead of a twelve-pass bisection.
+
+**The week-0 spike, as originally specified:**
 
 1. Hand-write the target WGSL for `matmul_relu_f32` (64×64×16 tile, `@workgroup_size(16,16,1)`,
    two `array<f32,1024>` workgroup tiles, 4×4 register fragment). Run it in Chrome against a JS oracle.

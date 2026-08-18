@@ -37,8 +37,11 @@
 
 <h1>tessera spike — baseline WGSL matmul</h1>
 <p class="sub">
-  Hand-written tiled GEMM + fused ReLU, 1024&times;768&times;512, f32.<br>
-  Checked against an order-matched, <code>Math.fround</code>-exact CPU oracle.
+  Tiled GEMM + fused ReLU, 1024&times;768&times;512, f32 &mdash; run twice:
+  <b>hand-written</b> WGSL, and WGSL <b>derived through MLIR</b>
+  (<code>mlir-opt</code> &rarr; SPIR-V &rarr; naga).<br>
+  Both checked against an order-matched, <code>Math.fround</code>-exact CPU oracle,
+  and against each other.
 </p>
 
 <button id="run">Run</button>
@@ -102,37 +105,69 @@ async function main() {
   write("");
   if (!storageOk || !invOk) throw new Error("this adapter cannot run the chosen tile");
 
-  // ---- compile ------------------------------------------------------------
-  write("── compile ────────────────────────────────────────");
-  const source = await (await fetch("./matmul.wgsl")).text();
-  const t0 = performance.now();
-  const { pipeline, messages } = await compile(ctx.device, source);
-  write(`createComputePipelineAsync   ${f(performance.now() - t0)} ms`);
-  for (const m of messages) {
-    write(`<span class="warn">${m.type} ${m.line}:${m.col}</span>  ${m.message}`);
-  }
-  if (messages.length === 0) write(`<span class="ok">no diagnostics</span>`);
-  write("");
+  // ---- compile + run both kernels ------------------------------------------
+  // Two implementations of the same kernel:
+  //   hand   — spike/wgsl-baseline/matmul.wgsl, written by a person
+  //   mlir   — generated: TS-shaped MLIR -> mlir-opt -> SPIR-V -> naga -> WGSL
+  // If the compiler works, these agree bit for bit.
+  const VARIANTS = [
+    { key: "hand", file: "./matmul.wgsl", entry: "main", label: "hand-written" },
+    { key: "mlir", file: "./matmul-mlir.wgsl", entry: "matmul", label: "MLIR-derived" },
+  ];
 
-  // ---- inputs -------------------------------------------------------------
-  write("── run ────────────────────────────────────────────");
   const a = randomF32(M * K, 0x1234);
   const b = randomF32(K * N, 0x5678);
+  const results = {};
 
-  const gpu = await runMatmul(ctx, pipeline, a, b, DIMS);
-  write(`workgroup ${gpu.workgroup.join("x")}   dispatch ${gpu.dispatch.join("x")}   ` +
-        `workgroupBytes ${gpu.workgroupBytes}`);
-  write(`wall (submit→done)   ${f(gpu.wallMs)} ms   ${f(gpu.gflopsWall, 1)} GFLOP/s ` +
-        `<span class="dim">(floor, includes queue latency)</span>`);
-  if (gpu.gpuMs !== null) {
-    write(`gpu (timestamps)     ${f(gpu.gpuMs)} ms   ${f(gpu.gflopsGpu, 1)} GFLOP/s`);
-    write(`<span class="dim">  Chrome quantizes timestamps to 100us unless developer features are enabled;</span>`);
-    write(`<span class="dim">  a suspiciously round number here means you are reading quantized data.</span>`);
+  for (const v of VARIANTS) {
+    write(`── ${v.label} ${"─".repeat(Math.max(0, 34 - v.label.length))}`);
+
+    let source;
+    try {
+      const res = await fetch(v.file);
+      if (!res.ok) throw new Error(`${res.status}`);
+      source = await res.text();
+    } catch {
+      write(`<span class="warn">skipped</span> — ${v.file} not found`);
+      write("");
+      continue;
+    }
+
+    const t0 = performance.now();
+    const { pipeline, messages } = await compile(ctx.device, source, v.entry, v.key);
+    write(`source ${source.split("\n").length} lines   pipeline ${f(performance.now() - t0)} ms`);
+    for (const m of messages) {
+      write(`<span class="warn">${m.type} ${m.line}:${m.col}</span>  ${m.message}`);
+    }
+
+    const gpu = await runMatmul(ctx, pipeline, a, b, DIMS);
+    results[v.key] = gpu.out;
+    write(`workgroup ${gpu.workgroup.join("x")}   dispatch ${gpu.dispatch.join("x")}   ` +
+          `wgBytes ${gpu.workgroupBytes}`);
+    write(`gpu ${gpu.gpuMs !== null ? f(gpu.gpuMs) + " ms  " + f(gpu.gflopsGpu, 1) + " GFLOP/s" : "(no timestamps)"}` +
+          `   wall ${f(gpu.wallMs)} ms`);
+    const s = summarize(gpu.out);
+    write(`output   min ${f(s.min)}  max ${f(s.max)}  mean ${f(s.mean)}  zeros ${s.zeros}  nans ${s.nans}`);
+    write("");
   }
-  const s = summarize(gpu.out);
-  write(`output   min ${f(s.min)}  max ${f(s.max)}  mean ${f(s.mean)}  ` +
-        `zeros ${s.zeros} <span class="dim">(~half, from relu)</span>  nans ${s.nans}`);
-  write("");
+
+  const gpu = { out: results.hand ?? results.mlir };
+  if (!gpu.out) throw new Error("no kernel ran");
+
+  // ---- hand vs MLIR, before either meets the oracle ------------------------
+  if (results.hand && results.mlir) {
+    write("── hand-written vs MLIR-derived ───────────────────");
+    const same = bitExactCount(results.mlir, results.hand);
+    const c2 = allClose(results.mlir, results.hand, { rtol: 1e-5, atol: 1e-6 });
+    write(`bit-exact   ${same} / ${results.hand.length}  (${(100 * same / results.hand.length).toFixed(4)}%)`);
+    write(`maxAbsDiff  ${c2.maxAbsDiff.toExponential(3)}`);
+    if (same === results.hand.length) {
+      write(`<span class="ok">IDENTICAL</span>  the generated kernel computes exactly what the hand-written one does.`);
+    } else {
+      write(`<span class="warn">DIVERGENT</span>  same tile, same order — so this is a codegen difference, not rounding.`);
+    }
+    write("");
+  }
 
   // ---- oracles ------------------------------------------------------------
   // Two references, differing in ONE rounding, plus the error scale. The point
