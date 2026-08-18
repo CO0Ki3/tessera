@@ -1,6 +1,6 @@
 # tessera
 
-A compiler that lowers kernels written in TypeScript to the GPU by way of MLIR.
+A compiler that lowers kernels written in TypeScript to WebGPU.
 
 ```
 kernel.ts ──▶ tsc typed AST ──▶ tessera IR ──▶ WGSL          (default)
@@ -11,7 +11,7 @@ kernel.ts ──▶ tsc typed AST ──▶ tessera IR ──▶ WGSL          (
 
 - Python has Triton and JAX. The TypeScript/web ecosystem has no option for WebGPU kernels other than writing WGSL by hand.
 - TypeScript's type system (literal types, conditional types) can check **tensor shapes at the type level**. That's an advantage no Python frontend has.
-- There is exactly one reason to use MLIR here: **to ride the existing dialects** — `linalg`, `vector`, `gpu`, SPIR-V. If we were going straight to LLVM, MLIR would be pure overhead.
+- There was exactly one reason to use MLIR: **to ride the existing dialects** — `linalg`, `vector`, `gpu`, SPIR-V — and otherwise it is pure overhead. That rule got tested. `LinalgToSPIRV` does not exist upstream, so we never rode the dialect we wanted, and an A/B against a direct WGSL printer measured what the detour costs: **1.57×**. Direct emission is now the default; `--backend=mlir` remains as the second oracle. See [`docs/002`](docs/002-performance.md) §5.
 
 ## Scope principles
 
