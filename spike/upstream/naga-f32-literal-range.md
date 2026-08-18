@@ -7,7 +7,9 @@
 - **Related**: [#4568](https://github.com/gfx-rs/wgpu/issues/4568) — same root
   cause (float serialization near `f32::MAX`), different backend and symptom
 - **Label**: `naga (Shader Translator)`
-- **Status**: ready to file
+- **Confirmed on shipping browsers**: Firefox 153.0 accepts, Chrome 151.0 rejects
+  (macOS). Not inferred from the CLI.
+- **Status**: ready to file — one row of the Chrome table still to re-run
 
 ## Premise check (before the details, not after)
 
@@ -29,9 +31,34 @@ that was exactly representable.
 
 ### Summary
 
+**Firefox and Chrome disagree about whether a shader compiles**, and the literal
+they disagree about is one that naga's own `wgsl-out` produces.
+
+Running the same five sources through `createShaderModule` in both browsers:
+
+| literal | Firefox 153 (naga) | Chrome 151 (Tint) |
+|---|---|---|
+| `3.4028234663852886e38` — exactly `f32::MAX` | accepted | accepted |
+| `3.4028235e38` | **accepted** | **rejected** |
+| `3.402823567e38` | **accepted** | **rejected** |
+| `3.4028235677973366e38` — the midpoint | rejected | rejected |
+| `1e39` | rejected | rejected |
+
+Firefox's diagnostic for the values it does reject is worth quoting, because the
+word suggests the intent:
+
+```
+the concrete type `f32` cannot represent the abstract value `3.4028235677973366e38` accurately
+```
+
+naga's rule is "does it round to a finite f32", Tint's is "is it ≤ `f32::MAX`",
+and the band between them is accepted by one browser and refused by the other.
+
+### The band is not hypothetical — naga emits into it
+
 Given a shader containing `f32::MAX` written exactly, naga's `wgsl-out` emits a
-literal whose value is **strictly greater than `f32::MAX`**, and Chrome (Tint)
-rejects the result at `createShaderModule`.
+literal whose value is **strictly greater than `f32::MAX`**, which Chrome then
+rejects at `createShaderModule`.
 
 ```wgsl
 // in.wgsl
@@ -141,12 +168,20 @@ agree that a shader compiles.
 
 <!-- ──────────────────── END ISSUE BODY ───────────────────── -->
 
-## Before filing
+## Before filing — one row left
 
-Open `spike/wgsl-baseline/f32-literal-check.html` in **Chrome and Firefox** and
-paste both results in. Row 2 is naga's actual `wgsl-out` output, so it answers
-the interop question directly. Everything above was measured against naga-cli
-30.0.0, not against a shipping Firefox.
+Both browsers have been run (Firefox 153.0, Chrome 151.0, macOS) and the
+divergence is confirmed. Firefox's boundary matches naga-cli 30.0.0 exactly,
+including the midpoint rejection, which confirms the CLI's behaviour is what
+Firefox ships.
+
+**Outstanding:** the Chrome run predates adding naga's literal verbatim
+(`340282350000000000000000000000000000000f`) as row 2 — that table has five rows,
+not six. Chrome rejects `3.4028235e38`, which is the same real number, and its
+own error prints the expanded decimal, so the result is not in doubt. But the
+issue's headline claim is that Chrome refuses *the exact string naga writes*, and
+that should be pasted rather than inferred. **Hard-reload
+`f32-literal-check.html` in Chrome and take row 2.**
 
 ## Not part of the issue — what tessera does about it
 
