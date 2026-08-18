@@ -21,6 +21,8 @@ import {
   derive, type AxisIR, type BindingIR, type DTypeName, type KernelIR, type PadName, type Schedule,
 } from "./ir.ts";
 
+import { parseRowBody, BodyError, type RowBody } from "./body.ts";
+
 const PAD_NAMES = ["zero", "one", "negInf", "posInf"] as const;
 
 export class FrontendError extends Error {
@@ -158,7 +160,7 @@ function checkCanonicalBody(
   reduceAxes: readonly AxisIR[],
   bindings: readonly BindingIR[],
   raggedNames: ReadonlySet<string>,
-): { padded: Map<string, PadName>; schedule: Schedule } {
+): { padded: Map<string, PadName>; schedule: Schedule; rowBody?: RowBody } {
   const body = call.arguments[1];
   if (!body || (!ts.isArrowFunction(body) && !ts.isFunctionExpression(body))) {
     fail(body ?? call, "kernel()'s second argument must be a function");
@@ -251,13 +253,14 @@ function checkCanonicalBody(
   // matches none of them is refused rather than approximated.
   const n = (nm: string) => op.get(nm) ?? 0;
   const isMatmul = n("mma") > 0;
-  const isSoftmax = n("rowMax") > 0 || n("rowSum") > 0;
+  const isRowwise = n("rowFill") > 0;
 
-  if (isMatmul && isSoftmax) {
+  if (isMatmul && isRowwise) {
     fail(body, `this body mixes mma with row reductions; no schedule matches it.`);
   }
 
   let schedule: Schedule;
+  let rowBody: RowBody | undefined;
   if (isMatmul) {
     schedule = "matmul";
     const shape = `${n("zeros")} zeros / ${forOf} loops / ${n("mma")} mma / ${store} store`;
@@ -266,23 +269,26 @@ function checkCanonicalBody(
         `the matmul schedule is 1 zeros, ${reduceAxes.length} reduce loop(s), 1 mma, ` +
         `1 store; this body is ${shape}.`);
     }
-  } else if (isSoftmax) {
-    schedule = "softmax";
-    const shape = `${n("rowFill")} rowFill / ${forOf} loops / ${n("rowMax")} rowMax / ` +
-                  `${n("rowSum")} rowSum / ${store} store`;
-    if (n("rowFill") !== 2 || forOf !== 3 || n("rowMax") !== 1 || n("rowSum") !== 1 || store !== 1) {
-      fail(body,
-        `the softmax schedule is 2 rowFill, 3 loops, 1 rowMax, 1 rowSum, 1 store; ` +
-        `this body is ${shape}.`);
+  } else if (isRowwise) {
+    // Read, not matched. How many accumulators there are, how many passes, and
+    // what each does all come out of the statements — see body.ts. Adding
+    // layernorm after softmax needed no change here, which is the measurement
+    // docs/004 part 2 was set up to take.
+    schedule = "rowwise";
+    try {
+      rowBody = parseRowBody(body.body, new Set(bindings.map((b) => b.name)), PAD_NAMES);
+    } catch (e) {
+      if (e instanceof BodyError) fail(e.node, e.message);
+      throw e;
     }
   } else {
     fail(body,
       `no schedule matches this body. Recognised today: a matmul (mma into a Frag) and ` +
-      `a row softmax (rowMax then rowSum then store). Compiling an arbitrary admitted ` +
-      `body is not implemented, and guessing would emit something you did not write.`);
+      `a row-wise reduction (rowFill, then passes over the reduce axis, then a store). ` +
+      `Guessing would emit something you did not write.`);
   }
 
-  return { padded, schedule };
+  return { padded, schedule, rowBody };
 }
 
 // ---------------------------------------------------------------------------
@@ -433,7 +439,7 @@ export function compileToIR(entryFile: string): KernelIR {
     for (const ax of b.axes) if (raggedNames.has(ax)) maskedLoads.push(`${b.name}:${ax}`);
   }
 
-  const { padded, schedule } = checkCanonicalBody(call, reduce, bindings, raggedNames);
+  const { padded, schedule, rowBody } = checkCanonicalBody(call, reduce, bindings, raggedNames);
 
   // Every read binding touching a ragged axis needs its identity named; the
   // surface enforces this too, but this message names the binding directly.
@@ -471,7 +477,7 @@ export function compileToIR(entryFile: string): KernelIR {
     : { bm: grid[0].block, bn: reduce[0].block, bk: reduce[0].block });
 
   return {
-    name, schedule, dtype, tile, grid, reduce, bindings, maskedLoads, pad,
+    name, schedule, dtype, tile, grid, reduce, bindings, maskedLoads, pad, body: rowBody,
     ...derive(tile, dtype, grid, undefined, schedule),
   };
 }

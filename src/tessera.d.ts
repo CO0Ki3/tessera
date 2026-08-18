@@ -321,6 +321,30 @@ export declare function expTile<BM extends number, BN extends number, D extends 
   block: Tile<readonly [BM, BN], D, P>,
 ): Tile<readonly [BM, BN], D, P extends "negInf" ? "zero" : P>;
 
+/** Elementwise square. Its masked lanes stay at the additive identity. */
+export declare function sqTile<BM extends number, BN extends number, D extends DType>(
+  block: Tile<readonly [BM, BN], D, "exact" | "zero">,
+): Tile<readonly [BM, BN], D, "exact" | "zero">;
+
+/**
+ * The row mean. The element count is the reduce axis's extent, which the
+ * compiler already knows — asking for it here would be asking the author to
+ * restate something the type carries, and to get it wrong on a ragged axis,
+ * where the count is the axis extent and not the padded block size.
+ */
+export declare function meanRow<BM extends number, D extends DType>(
+  sum: RowVec<BM, D>,
+): RowVec<BM, D>;
+
+/** Reciprocal standard deviation from the two accumulated moments. */
+export declare function rstdRow<BM extends number, D extends DType>(
+  sumSq: RowVec<BM, D>, mean: RowVec<NoInfer<BM>, NoInfer<D>>, eps: number,
+): RowVec<BM, D>;
+
+export declare function mulRow<BM extends number, BN extends number, D extends DType, P extends PadState>(
+  block: Tile<readonly [BM, BN], D, P>, row: RowVec<NoInfer<BM>, NoInfer<D>>,
+): Tile<readonly [BM, BN], D, P>;
+
 export declare function relu<S extends readonly [number, number], D extends DType>(
   x: Frag<S, D>): Frag<S, D>;
 export declare function exp<S extends readonly [number, number], D extends DType>(

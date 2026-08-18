@@ -393,3 +393,57 @@ discovered later by someone else.
 - **C**: empty. Nothing in `derive()` knows about the reduction being performed.
 - **D**: `rowSum` already exists and should serve both accumulators unchanged; `sqrt` and
   an `eps` constant are new. No structural change expected.
+
+
+## Results, part 2
+
+**Prediction B was right, and the pre-registered response was taken.** Adding layernorm
+produced exactly the expected failure:
+
+```
+the softmax schedule is 2 rowFill, 3 loops, 1 rowMax, 1 rowSum, 1 store;
+this body is 2 rowFill / 2 loops / 0 rowMax / 2 rowSum / 1 store
+```
+
+A third template. Rather than add the branch, the row-wise family is now **read** instead
+of matched. `src/body.ts` parses a body into accumulators, an ordered list of steps, and a
+small expression IR over the closed operator vocabulary. How many accumulators exist, how
+many passes there are and what each does all come out of the statements the author wrote.
+
+| | measured |
+|---|---|
+| **A. emitter** | **0 new lines.** One `emitRowwise`, 100 lines, serves softmax *and* layernorm |
+| **B. recogniser** | **generalised**, not branched. Two schedules remain — `matmul` and `rowwise` — and `rowwise` is a parser, not a pattern |
+| **C. derivation** | **empty**, as predicted. Nothing in `derive()` or the mask logic needed a third case |
+| **D. surface** | 4 new operators (`sqTile`, `meanRow`, `rstdRow`, `mulRow`); `rowFill`, `rowSum` and `subRow` reused unchanged. No structural change |
+
+Zero non-comment mentions of "layernorm" anywhere in `src/`.
+
+**Verdict by the rule fixed in advance: the vocabulary is converging.** B generalised and
+C is empty. The second kernel family cost a new emitter path; the third cost none.
+
+### Two bugs the experiment found in the work it was testing
+
+Both were caught by tools rather than by review, which is the point of having them.
+
+1. **Source order was lost.** `RowBody` kept derived row values and passes in separate
+   lists, so the emitter referenced `mu` before declaring it. In layernorm the two
+   interleave — reduce, then derive a mean and a reciprocal standard deviation, then
+   store — and softmax simply has no derived values, so nothing had exercised it. naga
+   caught it: *"no definition in scope for identifier: `mu`"*. Steps are now one ordered
+   list.
+
+2. **The f32 literal guard added last round was too strict.** It required an exact round
+   trip, and rejected `0.00001`. Almost no decimal literal is exactly representable in
+   f32 — `0.1` would have failed too — and rounding to the nearest is normal and
+   permitted. What Tint actually rejects is a magnitude beyond f32's range, so that is
+   what the guard checks now. A guard that fires on correct input is worse than none,
+   because the next person deletes it.
+
+### What is still not general
+
+`matmul` is still recognised by shape rather than read: `mma` into a `Frag`, one loop, one
+store. Generalising it means giving the body IR a register-fragment accumulator alongside
+the row vector, which is the same move again and is now the obvious next one. Until that
+happens the honest statement stays two-part — the derivation is general, and the schedule
+vocabulary is two entries, one of which is a parser and one of which is a template.

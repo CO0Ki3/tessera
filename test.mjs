@@ -149,6 +149,7 @@ for (const [entry, label, wantMasks] of [
   ["examples/matmul.kernel.ts", "aligned", false],
   ["examples/matmul-ragged.kernel.ts", "ragged", true],
   ["examples/softmax.kernel.ts", "softmax", true],
+  ["examples/layernorm.kernel.ts", "layernorm", true],
 ]) {
   let r;
   try {
@@ -157,7 +158,8 @@ for (const [entry, label, wantMasks] of [
   } catch (e) { bad(`${label}: ${(e.stdout ?? "") + (e.stderr ?? "")}`); continue; }
 
   const name = label === "ragged" ? "matmul_relu_ragged"
-             : label === "softmax" ? "softmax_f32" : "matmul_relu_f32";
+             : label === "softmax" ? "softmax_f32"
+             : label === "layernorm" ? "layernorm_f32" : "matmul_relu_f32";
   const wgsl = readFileSync(join(out, `${name}.wgsl`), "utf8");
   const bounds = (wgsl.match(/< \d+u\)/g) ?? []).length;
 
@@ -170,10 +172,13 @@ for (const [entry, label, wantMasks] of [
   // naga is not sufficient on its own: it accepted 57 occurrences of a float
   // literal larger than f32::MAX and reported success, and the shader then failed
   // to compile in Chrome. Tint is stricter, so this checks what naga does not.
+  // Range, not exactness: `0.00001` is not exactly representable in f32 and is
+  // perfectly legal. What Tint rejects is a magnitude beyond f32's.
+  const F32_MAX = 3.4028234663852886e38;
   const outOfRange = [...wgsl.matchAll(/-?\d+\.\d+(?:[eE][-+]?\d+)?/g)]
     .map((m) => m[0])
-    .filter((t) => { const v = Number(t); return Number.isFinite(v) && Math.fround(v) !== v; });
-  if (outOfRange.length === 0) ok(`${label}: every float literal round-trips through f32`);
+    .filter((t) => { const v = Number(t); return Number.isFinite(v) && Math.abs(v) > F32_MAX; });
+  if (outOfRange.length === 0) ok(`${label}: every float literal is within f32's range`);
   else bad(`${label}: ${outOfRange.length} literal(s) Tint will reject: ${[...new Set(outOfRange)].slice(0,2).join(", ")}`);
   if (wantMasks ? bounds > 0 : bounds === 0) {
     ok(`${label}: masks exactly where raggedness is`);
@@ -192,10 +197,10 @@ for (const [entry, label, wantMasks] of [
 // ---- 2d. the softmax emitter contains no masking of its own ----------------
 // The claim under test in docs/004: a second schedule reuses the access layer
 // rather than re-deriving where masks go. Measured on the source, not asserted.
-console.log("\nsecond schedule");
+console.log("\nthe row-wise schedule");
 {
   const src = readFileSync("src/emit-wgsl.ts", "utf8");
-  const soft = src.slice(src.indexOf("function emitSoftmax"), src.indexOf("// ---- bindings"));
+  const soft = src.slice(src.indexOf("function emitRowwise"), src.indexOf("/** The binding a block"));
   const body = soft.length > 0 ? soft : src;
   // The MASKING primitives specifically. A loop bound is not a mask: the softmax
   // schedule legitimately writes `nn < <reduce extent>` to know how far to
@@ -207,13 +212,14 @@ console.log("\nsecond schedule");
     .map((k) => [k, body.split(k).length - 1]);
   const total = hits.reduce((n, [, c]) => n + c, 0);
   if (soft.length === 0) {
-    bad("could not locate emitSoftmax in emit-wgsl.ts");
+    bad("could not locate emitRowwise in emit-wgsl.ts");
   } else if (total === 0) {
-    ok(`the softmax schedule contains no masking or indexing logic ` +
+    ok(`the row-wise schedule — which serves BOTH softmax and layernorm — contains ` +
+       `no masking or indexing logic ` +
        `(${(soft.match(/emitLoad\(/g) ?? []).length} emitLoad, ` +
        `${(soft.match(/emitStore\(/g) ?? []).length} emitStore)`);
   } else {
-    bad(`the softmax schedule contains masking logic: ` +
+    bad(`the row-wise schedule contains masking logic: ` +
         hits.filter(([, c]) => c > 0).map(([k, c]) => `${k} x${c}`).join(", "));
   }
 }

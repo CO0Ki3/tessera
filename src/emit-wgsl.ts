@@ -26,6 +26,7 @@
  */
 
 import { PAD_LITERAL, type AxisIR, type BindingIR, type KernelIR } from "./ir.ts";
+import type { Expr, RowExpr } from "./body.ts";
 
 export function emitWGSL(k: KernelIR): string {
   const { bm, bn, bk } = k.tile;
@@ -44,7 +45,7 @@ export function emitWGSL(k: KernelIR): string {
   const extent = new Map([...k.grid, ...k.reduce].map((a) => [a.name, a.extent]));
   const pick = (mode: "read" | "write", i: number) => k.bindings.filter((b) => b.mode === mode)[i];
   const a = pick("read", 0), b = pick("read", 1), c = pick("write", 0);
-  const softmax = k.schedule === "softmax";
+  const rowwise = k.schedule === "rowwise";
   const stride = (x: typeof a) => extent.get(x.axes[1])!;
 
   const L: string[] = [];
@@ -95,86 +96,134 @@ export function emitWGSL(k: KernelIR): string {
 
 
   /**
-   * Softmax: three passes over the reduce axis, with a cross-lane row reduction
-   * between them.
+   * The row-wise schedule, emitted from the parsed body.
    *
-   * Every access below goes through emitLoad / emitStore unchanged — the same
-   * functions the matmul schedule uses. No mask is placed here, and no index is
-   * flattened here; both come from the binding's axes and which of them are
-   * ragged. That reuse is the thing docs/004 items 2-4 are measuring.
+   * There is no softmax path and no layernorm path. The accumulators, the passes
+   * over the reduce axis, the derived row values and the store all come out of
+   * `k.body`, which was read from the statements the author wrote. Adding
+   * layernorm after softmax added no lines here.
+   *
+   * Every access still goes through emitLoad / emitStore — the same functions the
+   * matmul schedule uses — so no mask is placed here and no index is flattened
+   * here. That was measured in docs/004 part 1 and has not changed.
    */
-  function emitSoftmax(): void {
+  function emitRowwise(): void {
+    const body = k.body;
+    if (!body) throw new Error(`${k.name}: rowwise schedule with no parsed body`);
+    const NEG = PAD_LITERAL.negInf;
     const rowOf = (m: number) => `rowBase + ty * ${u(tm)} + ${u(m)}`;
     const colOf = (n: number) => `nn + tx * ${u(tn)} + ${u(n)}`;
-    const NEG = PAD_LITERAL.negInf;
+    const idx = new Map(body.accs.map((a, i) => [a.name, i]));
+    const slot = (name: string, m: number) => `${name}[${m}]`;
 
-    /** One masked read of x at fragment cell (m, n), bound to `v`. */
-    const readCell = (m: number, n: number, use: string, ind: number) => {
-      P(`{`, ind);
-      P(`let row = ${rowOf(m)};`, ind + 1);
-      P(`let col = ${colOf(n)};`, ind + 1);
-      emitLoad(`let v`, a, "row", "col", ind + 1);
-      P(use, ind + 1);
-      P(`}`, ind);
+    /** A block expression, as WGSL, for fragment cell (m, n) with `v` already loaded. */
+    const blockExpr = (e: Expr, m: number): string => {
+      switch (e.k) {
+        case "tile":   return `v`;
+        case "unary":  return e.op === "sq"
+          ? `(${blockExpr(e.a, m)} * ${blockExpr(e.a, m)})`
+          : `exp(${blockExpr(e.a, m)})`;
+        case "rowOp": {
+          const a = blockExpr(e.a, m), r = rowExpr(e.row, m);
+          return e.op === "sub" ? `(${a} - ${r})` : e.op === "mul" ? `(${a} * ${r})` : `(${a} / ${r})`;
+        }
+      }
     };
 
-    /** Combine `local[m]` across the ${wgx} lanes that share a row. */
-    const acrossLanes = (local: string, combine: (acc: string, x: string) => string, init: string) => {
-      for (let m = 0; m < tm; m++) {
-        P(`scratch[(ty * ${u(tm)} + ${u(m)}) * ${u(wgx)} + tx] = ${local}[${m}];`, 1);
+    /** A row expression, as WGSL, for the m-th row this invocation owns. */
+    const rowExpr = (r: RowExpr, m: number): string => {
+      switch (r.k) {
+        case "acc":  return slot(r.name, m);
+        case "mean": return `(${rowExpr(r.a, m)} / ${nExtent}.0)`;
+        case "rstd": {
+          const mu = rowExpr(r.mean, m);
+          return `inverseSqrt((${rowExpr(r.sumSq, m)} / ${nExtent}.0) - ${mu} * ${mu} + ${r.eps})`;
+        }
       }
-      P(`workgroupBarrier();`, 1);
-      for (let m = 0; m < tm; m++) {
-        P(`{`, 1);
-        P(`var r = ${init};`, 2);
-        P(`for (var j : u32 = 0u; j < ${u(wgx)}; j = j + 1u) {`, 2);
-        P(`r = ${combine("r", `scratch[(ty * ${u(tm)} + ${u(m)}) * ${u(wgx)} + j]`)};`, 3);
-        P(`}`, 2);
-        P(`${local}[${m}] = r;`, 2);
-        P(`}`, 1);
-      }
-      P(`workgroupBarrier();`, 1);
     };
 
     const nExtent = rk.extent, nBlock = bn;
 
-    // ---- pass 1: the row maximum
-    P(`var mx : array<${ty}, ${tm}>;`, 1);
-    for (let m = 0; m < tm; m++) P(`mx[${m}] = ${NEG};`, 1);
-    P(`for (var nn : u32 = 0u; nn < ${u(nExtent)}; nn = nn + ${u(nBlock)}) {`, 1);
-    for (let m = 0; m < tm; m++) {
-      for (let n = 0; n < tn; n++) readCell(m, n, `mx[${m}] = max(mx[${m}], v);`, 2);
+    // ---- accumulators
+    for (const acc of body.accs) {
+      P(`var ${acc.name} : array<${ty}, ${tm}>;`, 1);
+      const init = acc.init === "negInf" ? NEG : PAD_LITERAL[acc.init];
+      for (let m = 0; m < tm; m++) P(`${slot(acc.name, m)} = ${init};`, 1);
     }
-    P(`}`, 1);
-    acrossLanes("mx", (r, x) => `max(${r}, ${x})`, NEG);
+    P();
 
-    // ---- pass 2: the row sum of exp(x - max)
-    P(`var sm : array<${ty}, ${tm}>;`, 1);
-    for (let m = 0; m < tm; m++) P(`sm[${m}] = 0.0;`, 1);
-    P(`for (var nn : u32 = 0u; nn < ${u(nExtent)}; nn = nn + ${u(nBlock)}) {`, 1);
-    for (let m = 0; m < tm; m++) {
-      for (let n = 0; n < tn; n++) {
-        // exp(negInf - mx) is 0, so masked lanes contribute nothing to the sum.
-        // That is the identity conversion the surface records in expTile's type.
-        readCell(m, n, `sm[${m}] = sm[${m}] + exp(v - mx[${m}]);`, 2);
+    // ---- steps, in source order
+    for (const step of body.steps) {
+      if (step.k === "derived") {
+        // A derived row value is computed once per row this invocation owns,
+        // after the passes that produced its inputs and before whatever uses it.
+        P(`var ${step.name} : array<${ty}, ${tm}>;`, 1);
+        for (let m = 0; m < tm; m++) P(`${slot(step.name, m)} = ${rowExpr(step.expr, m)};`, 1);
+        P();
+        continue;
       }
-    }
-    P(`}`, 1);
-    acrossLanes("sm", (r, x) => `${r} + ${x}`, "0.0");
+      const pass = step;
+      P(`for (var nn : u32 = 0u; nn < ${u(nExtent)}; nn = nn + ${u(nBlock)}) {`, 1);
+      for (let m = 0; m < tm; m++) {
+        for (let n = 0; n < tn; n++) {
+          P(`{`, 2);
+          P(`let row = ${rowOf(m)};`, 3);
+          P(`let col = ${colOf(n)};`, 3);
+          if (pass.k === "reduce") {
+            // Every update in a pass reads the same cell once.
+            emitLoad(`let v`, bindingOf(pass.updates[0].value), "row", "col", 3);
+            for (const up of pass.updates) {
+              const val = blockExpr(up.value, m);
+              P(up.op === "max"
+                ? `${slot(up.acc, m)} = max(${slot(up.acc, m)}, ${val});`
+                : `${slot(up.acc, m)} = ${slot(up.acc, m)} + ${val};`, 3);
+            }
+          } else {
+            emitLoad(`let v`, bindingOf(pass.value), "row", "col", 3);
+            emitStore(byName(pass.binding), "row", "col", blockExpr(pass.value, m), 3);
+          }
+          P(`}`, 2);
+        }
+      }
+      P(`}`, 1);
 
-    // ---- pass 3: normalise and store
-    P(`for (var nn : u32 = 0u; nn < ${u(nExtent)}; nn = nn + ${u(nBlock)}) {`, 1);
-    for (let m = 0; m < tm; m++) {
-      for (let n = 0; n < tn; n++) {
-        P(`{`, 2);
-        P(`let row = ${rowOf(m)};`, 3);
-        P(`let col = ${colOf(n)};`, 3);
-        emitLoad(`let v`, a, "row", "col", 3);
-        emitStore(c, "row", "col", `exp(v - mx[${m}]) / sm[${m}]`, 3);
-        P(`}`, 2);
+      // A reduce pass ends by combining each accumulator across the lanes that
+      // share a row. How many accumulators there are is a property of the body.
+      if (pass.k === "reduce") {
+        const touched = [...new Set(pass.updates.map((x) => x.acc))];
+        for (const nm of touched) {
+          for (let m = 0; m < tm; m++) {
+            P(`scratch[(ty * ${u(tm)} + ${u(m)}) * ${u(wgx)} + tx] = ${slot(nm, m)};`, 1);
+          }
+          P(`workgroupBarrier();`, 1);
+          const op = pass.updates.find((x) => x.acc === nm)!.op;
+          const init = op === "max" ? NEG : "0.0";
+          for (let m = 0; m < tm; m++) {
+            P(`{`, 1);
+            P(`var r = ${init};`, 2);
+            P(`for (var j : u32 = 0u; j < ${u(wgx)}; j = j + 1u) {`, 2);
+            const cell = `scratch[(ty * ${u(tm)} + ${u(m)}) * ${u(wgx)} + j]`;
+            P(op === "max" ? `r = max(r, ${cell});` : `r = r + ${cell};`, 3);
+            P(`}`, 2);
+            P(`${slot(nm, m)} = r;`, 2);
+            P(`}`, 1);
+          }
+          P(`workgroupBarrier();`, 1);
+        }
       }
+      P();
     }
-    P(`}`, 1);
+  }
+
+  /** The binding a block expression ultimately reads from. */
+  function bindingOf(e: Expr): BindingIR {
+    while (e.k !== "tile") e = e.k === "unary" ? e.a : e.a;
+    return byName(e.binding);
+  }
+  function byName(n: string): BindingIR {
+    const bd = k.bindings.find((x) => x.name === n);
+    if (!bd) throw new Error(`no binding named ${n}`);
+    return bd;
   }
 
   P(`// Generated by tessera from a TypeScript kernel. Do not edit.`);
@@ -191,7 +240,7 @@ export function emitWGSL(k: KernelIR): string {
     P(`@group(0) @binding(${i}) var<storage, ${mode}> ${bd.name} : array<${ty}>;`);
   }
   P();
-  if (softmax) {
+  if (rowwise) {
     // No operand staging: every element is read once per pass, so staging buys
     // nothing. What IS needed is scratch for the cross-lane row reduction —
     // one slot per row per lane.
@@ -206,16 +255,16 @@ export function emitWGSL(k: KernelIR): string {
   P(`fn ${k.name}(@builtin(workgroup_id)        wg  : vec3<u32>,`);
   P(`${" ".repeat(k.name.length + 3)}@builtin(local_invocation_id) lid : vec3<u32>) {`);
 
-  P(softmax ? `let blockRow = wg.x;` : `let blockRow = wg.y;`, 1);
-  if (!softmax) P(`let blockCol = wg.x;`, 1);
+  P(rowwise ? `let blockRow = wg.x;` : `let blockRow = wg.y;`, 1);
+  if (!rowwise) P(`let blockCol = wg.x;`, 1);
   P(`let tx  = lid.x;`, 1);
   P(`let ty  = lid.y;`, 1);
-  if (!softmax) P(`let tid = ty * ${u(wgx)} + tx;`, 1);
+  if (!rowwise) P(`let tid = ty * ${u(wgx)} + tx;`, 1);
   P(`let rowBase = blockRow * ${u(bm)};`, 1);
-  if (!softmax) P(`let colBase = blockCol * ${u(bn)};`, 1);
+  if (!rowwise) P(`let colBase = blockCol * ${u(bn)};`, 1);
   P();
 
-  if (softmax) { emitSoftmax(); P(`}`); return L.join("\n") + "\n"; }
+  if (rowwise) { emitRowwise(); P(`}`); return L.join("\n") + "\n"; }
 
   P(`var acc : array<${ty}, ${nacc}>;`, 1);
   P();

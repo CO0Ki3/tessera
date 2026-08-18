@@ -7,6 +7,8 @@
  * backend never has to ask "what if this extent is dynamic".
  */
 
+import type { RowBody } from "./body.ts";
+
 export type DTypeName = "f32" | "f16" | "i32";
 
 export type PadName = "zero" | "one" | "negInf" | "posInf";
@@ -14,12 +16,12 @@ export type PadName = "zero" | "one" | "negInf" | "posInf";
 /**
  * Which schedule the body describes.
  *
- * An honest admission: tessera recognises a fixed set of schedules rather than
- * compiling an arbitrary body. What the falsification test measures is whether
- * the DERIVED parts — masks, indexing, dispatch — are shared across them, or
- * re-written per schedule. See docs/004.
+ * `rowwise` is not a template: its accumulators, passes and store are READ from
+ * the body (see body.ts) rather than matched against a per-kernel shape. softmax
+ * and layernorm are both `rowwise` and share every line of the emitter.
+ * `matmul` is still recognised by shape, and generalising it is the next step.
  */
-export type Schedule = "matmul" | "softmax";
+export type Schedule = "matmul" | "rowwise";
 
 /**
  * The literal a backend emits for an identity.
@@ -49,16 +51,22 @@ export const PAD_LITERAL: Record<PadName, string> = {
  * a shader compilation error in Chrome. So the check lives here, where it costs
  * nothing and catches the whole class rather than the one instance.
  */
+export const F32_MAX = 3.4028234663852886e38;
+
 export function assertF32Literals(wgsl: string, where: string): void {
   const bad: string[] = [];
   for (const m of wgsl.matchAll(/-?\d+\.\d+(?:[eE][-+]?\d+)?/g)) {
     const v = Number(m[0]);
     if (!Number.isFinite(v)) continue;
-    if (!Number.isFinite(Math.fround(v)) || Math.fround(v) !== v) bad.push(m[0]);
+    // RANGE, not exactness. Requiring an exact round trip was wrong and rejected
+    // `0.00001` — almost no decimal literal is exactly representable in f32, and
+    // rounding to the nearest one is normal and permitted. What Tint rejects is a
+    // magnitude beyond f32's, even when it would round back down to the maximum.
+    if (Math.abs(v) > F32_MAX) bad.push(m[0]);
   }
   if (bad.length) {
     throw new Error(
-      `${where}: ${bad.length} float literal(s) do not round-trip through f32, ` +
+      `${where}: ${bad.length} float literal(s) exceed f32's range (${F32_MAX}), ` +
       `which Tint rejects even though naga does not: ${[...new Set(bad)].slice(0, 3).join(", ")}`);
   }
 }
@@ -99,6 +107,8 @@ export interface KernelIR {
    * element; deciding WHERE masks go is the compiler's.
    */
   readonly maskedLoads: readonly string[];
+  /** Present for `rowwise`: the body, parsed. */
+  readonly body?: RowBody;
   /**
    * The identity element for masked loads, by NAME.
    *
