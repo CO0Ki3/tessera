@@ -6,6 +6,13 @@
 - **Status**: not yet filed
 - **Impact on tessera**: worked around in `spike/wgsl-baseline/vendor.mjs`; guarded by `npm test`
 
+## Scope
+
+This is only about `process.env`. Shipping bare specifiers for real dependencies
+is normal and correct, and resolving them is the consumer's job (import map or
+bundler). The `process.env` read is different: it fails **even with** a correct
+import map, because there is no `process` to read.
+
 ## What happens
 
 `package.json` advertises the package as plain ESM:
@@ -71,16 +78,34 @@ reason to expect `./index.js` to be a loadable ES module.
 
 ## Reproduction
 
-```
+The bare specifiers have to be resolved first, or the page fails on those instead
+— TypeGPU has three runtime dependencies (`tsover-runtime`, `typed-binary`,
+`tinyest`). An import map covers them, and then `process` is the only thing left:
+
+```sh
 npm i typegpu@0.12.0
-mkdir -p www && cp -R node_modules/typegpu www/typegpu
-printf '<script type="module">import tgpu from "./typegpu/index.js"; console.log(tgpu);</script>' > www/i.html
+mkdir -p www
+for p in typegpu tsover-runtime typed-binary tinyest; do cp -R node_modules/$p www/$p; done
+cat > www/i.html <<'HTML'
+<script type="importmap">{"imports":{
+  "typegpu":        "./typegpu/index.js",
+  "tsover-runtime": "./tsover-runtime/dist/index.js",
+  "typed-binary":   "./typed-binary/dist/index.js",
+  "tinyest":        "./tinyest/index.js"
+}}</script>
+<script type="module">import tgpu from "typegpu"; console.log(tgpu);</script>
+HTML
 python3 -m http.server -d www 8080
-# open http://localhost:8080/i.html -> ReferenceError: process is not defined
 ```
 
-Contrast with `node -e 'import("typegpu").then(m => console.log(!!m.default))'`, which
-prints `true`.
+```
+Uncaught ReferenceError: process is not defined
+    at typegpu/shared/env.js:9
+```
+
+Contrast with `node -e 'import("typegpu").then(m => console.log(!!m.default))'`,
+which prints `true` — Node has `process`, so nothing upstream of a browser sees
+this.
 
 ## What tessera does about it
 

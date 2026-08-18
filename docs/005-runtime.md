@@ -1,7 +1,8 @@
 # 005 — The runtime: what TypeGPU absorbs, and what it structurally cannot
 
 Status: **adapter built and statically verified; the first browser run found an
-upstream blocker, now worked around; the timing number is pending a re-run.**
+upstream blocker and a bundler assumption, both worked around; the timing
+number is pending a re-run.**
 Code: `spike/wgsl-baseline/typegpu-runner.js`, `vendor.mjs`,
 `check-typegpu-layout.mjs`.
 
@@ -116,58 +117,81 @@ The harness is served by `python3 -m http.server` rooted at
 `spike/wgsl-baseline/`, which cannot see the repo root's `node_modules`, so
 TypeGPU is vendored into the harness directory (gitignored). See §6.
 
-## 6. Vendoring found an upstream blocker
+## 6. Vendoring took three attempts, and the third one is the method
 
-The plan was `cp -R node_modules/typegpu` and nothing else: TypeGPU's ESM uses
-relative specifiers throughout (166 modules reachable from the adapter, zero bare
-imports), so it should serve as-is with no bundler and no import map.
+The plan was `cp -R node_modules/typegpu` and nothing else. It took two browser
+runs to find out why that does not work, and the interesting part is not either
+defect — it is that **both were invisible from Node**, and that the check which
+was supposed to catch the second one reported success.
 
-It does not. The first browser run reported the variant as skipped, and the reason
-was that **TypeGPU's published ESM cannot be loaded by a browser at all**.
-`shared/env.js` evaluates, at module top level:
+### Attempt 1 — `process.env` at module top level
+
+`shared/env.js` evaluates:
 
 ```js
 export const DEV = process.env.NODE_ENV === 'development';
-export const TEST = process.env.NODE_ENV === 'test';
 ```
 
 `env.js` is imported by `errors.js`, so it is in everything. In a browser
-`process` is undefined and the entire graph fails with a `ReferenceError`. The
-file's own comment states the assumption — *"pretty much every bundler replaces
+`process` is undefined and the entire graph dies with a `ReferenceError`. The
+file's own comment names the assumption — *"pretty much every bundler replaces
 the expression below"* — which is true of the documented setups and means the
-package as published is not loadable by the runtime it targets. `package.json`
-advertises `"exports": { ".": "./index.js" }` with no `browser` condition and no
-bundled build.
+package as published is not loadable by the runtime it targets. This is a real
+upstream defect, because it fails even with a correct import map:
+[`spike/upstream/typegpu-process-env-esm.md`](../spike/upstream/typegpu-process-env-esm.md).
+The fix upstream is one line.
 
-**It is invisible from Node.** `await import("typegpu")` in a Node script
-succeeds, because Node has `process`. A CI job that only imports the package
-passes while the browser path is broken. That is why this cost a browser run to
-find rather than being caught by the module-graph walk that ran first — the walk
-proved every file exists, which was true and not the problem.
+### Attempt 2 — three dependencies imported by bare specifier
 
-So `vendor.mjs` does the substitution a bundler would (`DEV = false`,
-`TEST = false`), and then refuses to trust itself:
+TypeGPU imports `tsover-runtime`, `typed-binary` and `tinyest` by name. That is
+normal and not a defect; resolving it is the consumer's job. Without a bundler
+the options are an import map or rewriting the specifiers, and vendoring rewrites
+them, so `typegpu-runner.js` stays importable from any page and from Node without
+either knowing about this.
 
-- it rescans the whole vendored tree for any remaining `process.` / `require(` /
-  `node:` / `__dirname` reference, so a TypeGPU upgrade that reintroduces one
-  fails here rather than in a browser console;
-- it walks the module graph the browser will fetch and fails on a missing file;
-- `vendor.mjs --check` runs both against an existing tree, and is in `npm test`.
+### The part worth keeping: a check that returns zero proves nothing
 
-Both guards were falsified before being trusted — restoring the `process.env`
-line and deleting a reachable leaf each produce a non-zero exit.
+Before the first browser run, this was checked. The check reported
+**"bare imports across the ESM: 0"**, and that number was believed.
 
-Written up for upstream in
-[`spike/upstream/typegpu-process-env-esm.md`](../spike/upstream/typegpu-process-env-esm.md);
-the one-line fix is to read `typeof process !== 'undefined' ? process.env : {}`,
-which still folds under every bundler.
+The grep matched `from "..."`. TypeGPU writes `from 'tsover-runtime'`.
+
+The check could not have returned anything but zero, and nothing in it would ever
+have said so. It was not a weak check; it was a check whose failure mode was
+indistinguishable from success. Same for the module-graph walk that ran next: it
+followed relative specifiers and *silently skipped* bare ones, so it confirmed
+that 166 files exist — true, and not the problem.
+
+So `vendor.mjs` requires a **positive control**. It scans the unmodified tree
+first and refuses to continue if it finds no bare specifiers:
+
+```
+the bare-specifier scanner found nothing in an UNMODIFIED tree.
+That is not good news — typegpu imports tsover-runtime, typed-binary and
+tinyest by bare specifier. The scanner is broken; fix it before trusting it.
+```
+
+That message is not hypothetical — reintroducing the double-quotes-only regex
+produces it. Every guard was falsified before being trusted:
+
+| perturbation | caught by |
+|---|---|
+| restore `from 'tsover-runtime'` (single quotes) | bare-specifier scan |
+| restore `process.env.NODE_ENV` | host-only scan |
+| delete a reachable leaf module | module-graph walk |
+| break the scanner to double-quotes-only | **positive control** |
+
+`vendor.mjs --check` runs the verification half against an existing tree and is in
+`npm test`, so a TypeGPU upgrade that reintroduces either problem fails there
+rather than in a browser console nobody is reading.
 
 ### The harness was also lying about why
 
 The skip message said `run npm run vendor` for *any* load failure — and TypeGPU
 *had* been vendored. A page that guesses at why it skipped something costs more
-than one that says it does not know, so the error is now kept and printed. This
-was the actual reason the diagnosis took a round trip.
+than one that says it does not know, so the error is now kept and printed
+verbatim. The second failure was diagnosed from the page in one reading;
+the first cost a round trip.
 
 ## 7. Measuring it honestly
 
