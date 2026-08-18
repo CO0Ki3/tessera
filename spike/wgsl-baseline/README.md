@@ -31,7 +31,11 @@ deliberately not built yet.
 | `oracle.js` | seeded inputs, `Math.fround`-exact CPU reference, `allClose` |
 | `sim.mjs` | CPU simulation of the kernel's own index arithmetic — runs without a GPU |
 | `run.js` | WebGPU host: device, limits, compile, dispatch, readback, timestamps |
-| `index.html` | browser harness that reports all of the above |
+| `index.html` | the index — one page per thing being verified |
+| `matmul.html` | hand-written vs both tessera backends, measured and diffed |
+| `ragged.html` | the same matmul where no axis divides its block |
+| `rowwise.html` | softmax and layernorm, sharing one emitter |
+| `measure.js` | warm up, repeat, interleave, report the minimum |
 
 ## Running it
 
@@ -59,8 +63,10 @@ touching a GPU. It does **not** validate WGSL syntax; that happens in step 2.
 
 ```bash
 python3 -m http.server 8080
-# then open http://localhost:8080/ in Chrome
+# then open http://localhost:8080/ in Chrome — the index lists each page
 ```
+
+Regenerate every shader first with `npm run demo` from the repo root.
 
 A local server is required: `run.js` fetches `matmul.wgsl`, and `file://`
 origins block that. The page reports adapter info, the real device limits

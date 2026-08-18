@@ -2,406 +2,77 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>tessera spike — baseline WGSL matmul</title>
+<title>tessera</title>
 <style>
   :root { color-scheme: light dark; }
-  body {
-    font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
-    margin: 0; padding: 24px; max-width: 900px;
-    background: Canvas; color: CanvasText;
-  }
-  h1 { font-size: 15px; margin: 0 0 4px; letter-spacing: .02em; }
-  .sub { opacity: .65; margin: 0 0 20px; }
-  button {
-    font: inherit; padding: 7px 16px; cursor: pointer;
-    border: 1px solid CanvasText; border-radius: 5px;
-    background: transparent; color: inherit;
-  }
-  button:disabled { opacity: .4; cursor: default; }
-  pre {
-    white-space: pre-wrap; word-break: break-word;
-    margin: 18px 0 0; padding: 16px;
-    border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
-    border-radius: 6px; overflow-x: auto;
-  }
-  .ok   { color: #12894a; font-weight: 600; }
-  .bad  { color: #c02626; font-weight: 600; }
-  .warn { color: #a06a00; }
-  .dim  { opacity: .6; }
-  @media (prefers-color-scheme: dark) {
-    .ok { color: #4ade80; } .bad { color: #f87171; } .warn { color: #fbbf24; }
-  }
+  body { font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+         margin: 0; padding: 32px 24px; max-width: 820px; background: Canvas; color: CanvasText; }
+  h1 { font-size: 16px; margin: 0 0 6px; letter-spacing: .02em; }
+  .lede { opacity: .7; margin: 0 0 8px; }
+  .note { opacity: .55; margin: 0 0 28px; font-size: 12px; }
+  a.card { display: block; text-decoration: none; color: inherit;
+           border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+           border-radius: 7px; padding: 14px 16px; margin: 0 0 12px; }
+  a.card:hover { border-color: color-mix(in srgb, CanvasText 55%, transparent);
+                 background: color-mix(in srgb, CanvasText 4%, transparent); }
+  .t { font-weight: 600; }
+  .p { opacity: .5; float: right; font-size: 12px; }
+  .d { opacity: .75; margin-top: 5px; }
+  .v { opacity: .55; margin-top: 7px; font-size: 12px; }
+  .v b { font-weight: 600; opacity: .85; }
+  code { background: color-mix(in srgb, CanvasText 8%, transparent);
+         padding: 1px 4px; border-radius: 3px; }
+  footer { margin-top: 30px; padding-top: 16px; opacity: .5; font-size: 12px;
+           border-top: 1px solid color-mix(in srgb, CanvasText 15%, transparent); }
 </style>
 </head>
 <body>
 
-<h1>tessera spike — baseline WGSL matmul</h1>
-<p class="sub">
-  Tiled GEMM + fused ReLU, 1024&times;768&times;512, f32 &mdash; run twice:
-  <b>hand-written</b> WGSL, and WGSL <b>compiled by tessera</b> from
-  <code>examples/matmul.kernel.ts</code>
-  (tsc &rarr; IR &rarr; MLIR &rarr; SPIR-V &rarr; naga).<br>
-  Both checked against an order-matched, <code>Math.fround</code>-exact CPU oracle,
-  and against each other.
-</p>
+<h1>tessera</h1>
+<p class="lede">TypeScript kernels in, WGSL out. These pages run the compiler's output on
+your GPU and check it against a CPU reference.</p>
+<p class="note">Each page verifies something different, and each is meant to be able to
+fail. Regenerate the shaders with <code>npm run demo</code> before reloading.</p>
 
-<button id="run">Run</button>
+<a class="card" href="./matmul.html">
+  <span class="p">/matmul.html</span>
+  <span class="t">matmul, four ways</span>
+  <div class="d">A hand-written tiled GEMM, the same kernel compiled by tessera through
+    MLIR, and the same kernel compiled straight to WGSL — measured against each other with
+    warm-up, repetition and interleaving.</div>
+  <div class="v"><b>Verifies</b> all three agree bit-for-bit, and that the GPU contracted
+    <code>acc + a*b</code> into an fma. <b>Settles</b> which backend to keep: the direct
+    printer reaches the hand-written kernel where the MLIR chain costs 1.57×.</div>
+</a>
 
-<pre id="log">Ready. Click Run.</pre>
+<a class="card" href="./ragged.html">
+  <span class="p">/ragged.html</span>
+  <span class="t">ragged axes</span>
+  <div class="d">The same matmul at 1000×750×500, where no axis divides its block. The
+    kernel body is character-identical to the aligned one and contains no mask expression;
+    the compiler synthesises all 12 boundary checks from the extents in the types.</div>
+  <div class="v"><b>Verifies</b> 750000/750000 bit-exact, tails included — 40 rows, 46
+    columns, 4 deep. A wrong mask would read a neighbouring row and be obvious.</div>
+</a>
 
-<script type="module">
-import { initDevice, compile } from "./run.js";
-import { createRunner, measureInterleaved, QUANTUM_NS } from "./measure.js";
-import {
-  DIMS, randomF32, matmulReluF32, allClose, summarize,
-  dotAbsSum, withinErrorBound, bitExactCount,
-} from "./oracle.js";
+<a class="card" href="./rowwise.html">
+  <span class="p">/rowwise.html</span>
+  <span class="t">the row-wise schedule</span>
+  <div class="d">softmax and layernorm, sharing every line of one emitter. Their
+    accumulators, passes and store are read from the body rather than matched against a
+    template — adding layernorm after softmax added zero emitter lines.</div>
+  <div class="v"><b>Verifies</b> each twice: an invariant that needs no reference at all
+    (softmax's rows sum to 1, layernorm's have mean 0 and variance 1), then a CPU oracle on
+    the error scale the operations actually permit.</div>
+</a>
 
-const logEl = document.getElementById("log");
-const btn = document.getElementById("run");
-let buf = "";
-
-const write = (s = "") => { buf += s + "\n"; logEl.innerHTML = buf; };
-const yieldToPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
-const f = (x, n = 3) => Number(x).toFixed(n);
-
-btn.addEventListener("click", async () => {
-  btn.disabled = true;
-  buf = "";
-  try {
-    await main();
-  } catch (err) {
-    write(`\n<span class="bad">FAILED</span>  ${err.message}`);
-    if (err.stack) write(`<span class="dim">${err.stack.split("\n").slice(1, 4).join("\n")}</span>`);
-  } finally {
-    btn.disabled = false;
-  }
-});
-
-async function main() {
-  const { M, N, K } = DIMS;
-
-  // ---- device -------------------------------------------------------------
-  write("── device ─────────────────────────────────────────");
-  const ctx = await initDevice();
-  const ai = ctx.adapterInfo;
-  write(`adapter        ${ai.vendor} / ${ai.architecture} ${ai.device} ${ai.description}`);
-  write(`timestamp-query ${ctx.hasTimestamps ? "available" : "NOT available (wall-clock only)"}`);
-  write("");
-
-  const L = ctx.limits;
-  const usedBytes = (64 * 16 + 16 * 64) * 4;
-  const invocations = 16 * 16;
-  const storageOk = usedBytes <= L.maxComputeWorkgroupStorageSize;
-  const invOk = invocations <= L.maxComputeInvocationsPerWorkgroup;
-
-  write("── limits vs. what this tile assumes ──────────────");
-  write(`workgroup storage   ${usedBytes} B used / ${L.maxComputeWorkgroupStorageSize} B limit` +
-        `   ${storageOk ? '<span class="ok">ok</span>' : '<span class="bad">EXCEEDS</span>'}` +
-        `  <span class="dim">(sized against the 16384 guaranteed floor)</span>`);
-  write(`invocations/wg      ${invocations} used / ${L.maxComputeInvocationsPerWorkgroup} limit` +
-        `   ${invOk ? '<span class="ok">ok</span>' : '<span class="bad">EXCEEDS</span>'}` +
-        `  <span class="dim">(sits exactly at the guaranteed 256)</span>`);
-  write(`storage buffers     3 used / ${L.maxStorageBuffersPerShaderStage} limit`);
-  write(`workgroups/dim      16 max used / ${L.maxComputeWorkgroupsPerDimension} limit`);
-  write("");
-  if (!storageOk || !invOk) throw new Error("this adapter cannot run the chosen tile");
-
-  // ---- compile + run both kernels ------------------------------------------
-  // Two implementations of the same kernel:
-  //   hand   — spike/wgsl-baseline/matmul.wgsl, written by a person
-  //   mlir   — compiled by tessera from examples/matmul.kernel.ts
-  // If the compiler works, these agree bit for bit.
-  // The tessera variant carries no hardcoded entry point: `tessera build` writes
-  // a manifest, because the WGSL entry point is not necessarily spec.name \u2014 naga
-  // renames anything ending in a reserved word (matmul_relu_f32 -> ..._).
-  const VARIANTS = [
-    { key: "hand", file: "./matmul.wgsl", entry: "main", label: "hand-written",
-      dispatch: [768 / 64, 1024 / 64, 1] },
-    { key: "mlir", file: "./matmul-mlir.wgsl", manifest: "./matmul-mlir.json",
-      label: "tessera: TS \u2192 MLIR \u2192 WGSL" },
-    // The A/B that settles docs/002 \u00a74: same front end, same IR, same codegen
-    // decisions, no MLIR. If this reaches the hand-written kernel's 7 quanta the
-    // tax is the translation chain; if it also lands at 11 the tax is ours.
-    { key: "direct", file: "./matmul-direct.wgsl", manifest: "./matmul-direct.json",
-      label: "tessera: TS \u2192 WGSL (no MLIR)" },
-    // Two-sided probe of the storage access mode (node make-probes.mjs).
-    // A1 makes the fast kernel worse; A2 makes the slow kernel better. If the
-    // gap is the access mode, they move toward each other and meet.
-    { key: "handRW", file: "./probe-hand-rw.wgsl", entry: "main", probe: true,
-      label: "probe A1: hand, inputs read_write", dispatch: [768 / 64, 1024 / 64, 1] },
-    { key: "mlirRO", file: "./probe-tessera-ro.wgsl", manifest: "./matmul-mlir.json",
-      probe: true, label: "probe A2: tessera, inputs read" },
-    // Probe B: the same tessera kernel built with --no-opt. The default build now
-    // runs canonicalize/cse/licm, which cuts the inner loop from 24 integer ops
-    // per iteration to 9. This is the before.
-    { key: "mlirNoOpt", file: "./probe-tessera-noopt.wgsl", manifest: "./matmul-mlir.json",
-      probe: true, label: "probe B: tessera, --no-opt" },
-    // Probe C: the reduction-block loop fully unrolled in the emitter. Both
-    // kernels have a `for k in 0..bk` at source level, but naga lowers tessera's
-    // into loop{}/continuing{} with phi variables. If that structure is what
-    // costs the 1.57x, removing the loop should close it.
-    { key: "mlirUnroll", file: "./probe-tessera-unroll.wgsl", manifest: "./matmul-mlir.json",
-      probe: true, label: "probe C: tessera, k-loop unrolled" },
-    // Probe D: the direct WGSL pushed through naga and back, with MLIR entirely
-    // out of the picture. The round-trip picks up loop{}/continuing{} but NOT
-    // the 144 phi variables or the 4 bitcasts, so it separates the two
-    // candidates: if this stays fast, the loop form is innocent.
-    { key: "roundtrip", file: "./probe-direct-roundtrip.wgsl",
-      manifest: "./probe-direct-roundtrip.json", probe: true,
-      label: "probe D: direct, naga round-trip" },
-  ];
-
-  const a = randomF32(M * K, 0x1234);
-  const b = randomF32(K * N, 0x5678);
-  const results = {};
-  const runners = [];
-
-  // ---- compile everything first -------------------------------------------
-  write("── compile ────────────────────────────────────────");
-  for (const v of VARIANTS) {
-    let source;
-    try {
-      const res = await fetch(v.file);
-      if (!res.ok) throw new Error(`${res.status}`);
-      source = await res.text();
-    } catch {
-      write(`  ${v.label.padEnd(34)} <span class="warn">skipped</span> (${v.file} not found)`);
-      continue;
-    }
-
-    let entry = v.entry;
-    // The hand-written kernel has no compiler behind it, so it carries a literal
-    // manifest of the same shape rather than a special case downstream.
-    let man = v.manifest ? null : {
-      dispatch: v.dispatch,
-      bindings: [
-        { name: "a", mode: "read",  elements: DIMS.M * DIMS.K },
-        { name: "b", mode: "read",  elements: DIMS.K * DIMS.N },
-        { name: "c", mode: "write", elements: DIMS.M * DIMS.N },
-      ],
-    };
-    if (v.manifest) {
-      const mres = await fetch(v.manifest);
-      if (!mres.ok) { write(`  ${v.label.padEnd(34)} <span class="warn">no manifest</span>`); continue; }
-      man = await mres.json();
-      entry = man.entryPoint;
-    }
-
-    const t0 = performance.now();
-    const { pipeline, messages } = await compile(ctx.device, source, entry, v.key);
-    for (const m of messages) write(`<span class="warn">${m.type} ${m.line}:${m.col}</span> ${m.message}`);
-    write(`  ${v.label.padEnd(34)} ${String(source.split("\n").length).padStart(4)} lines   ` +
-          `pipeline ${f(performance.now() - t0, 1).padStart(7)} ms`);
-    runners.push({ v, r: createRunner(ctx, pipeline, [a, b], man, v.key) });
-  }
-  if (!runners.length) throw new Error("nothing compiled");
-  write("");
-
-  // ---- measure -------------------------------------------------------------
-  // Warm up, repeat, interleave. See measure.js for why all three are required:
-  // the previous single-dispatch method reported the same shader at 45q and 22q
-  // in different sessions, and made a kernel look 2.7x faster for being made
-  // worse. That was clock ramping, not the kernels.
-  const WARMUP = 8, REPS = 25;
-  write("── measure ────────────────────────────────────────");
-  write(`${runners.length} kernels x (${WARMUP} warm-up + ${REPS} timed), interleaved round-robin`);
-  await yieldToPaint();
-
-  const stats = await measureInterleaved(runners.map((x) => x.r), { warmup: WARMUP, reps: REPS });
-  write("");
-
-  const q = (k) => stats.get(k)?.minQ ?? null;
-  write(`  ${"kernel".padEnd(34)}  ${"min".padStart(5)} ${"med".padStart(5)} ${"max".padStart(5)}   spread   GFLOP/s`);
-  for (const { v } of runners) {
-    const st = stats.get(v.key);
-    if (!st) { write(`  ${v.label.padEnd(34)}  (no timestamps)`); continue; }
-    const g = 2 * M * N * K / (st.minNs * 1e-9) / 1e9;
-    write(`  ${v.label.padEnd(34)}  ${String(st.minQ).padStart(5)} ${String(st.medianQ).padStart(5)} ` +
-          `${String(st.maxQ).padStart(5)}   ${String(st.spreadQ).padStart(6)}   ${f(g, 1).padStart(7)}` +
-          (st.spreadQ > st.minQ * 0.5 ? `  <span class="warn">noisy</span>` : ""));
-  }
-  write("");
-  write(`<span class="dim">min is the estimator: for fixed work, noise is one-sided — nothing makes a</span>`);
-  write(`<span class="dim">kernel faster than the hardware allows, so the floor converges on the kernel.</span>`);
-  write("");
-
-  // ---- what the numbers say ------------------------------------------------
-  write("── verdict ────────────────────────────────────────");
-  const gap = q("hand") && q("mlir") ? q("mlir") / q("hand") : null;
-  if (gap !== null) {
-    write(`tessera (MLIR) vs hand-written    ${f(gap, 2)}x` +
-          (Math.abs(q("mlir") - q("hand")) <= 1
-            ? `  <span class="dim">(within one quantum — indistinguishable)</span>` : ""));
-  }
-  if (q("direct") && q("hand")) {
-    const d = q("direct") / q("hand");
-    write(`tessera (direct) vs hand-written  ${f(d, 2)}x` +
-          (Math.abs(q("direct") - q("hand")) <= 1
-            ? `  <span class="dim">(within one quantum — indistinguishable)</span>` : ""));
-    write("");
-    // The verdict table from docs/002 §5, applied.
-    if (Math.abs(q("direct") - q("hand")) <= 1) {
-      write(`<span class="ok">The tax is the MLIR chain.</span>  Same front end, same IR, same`);
-      write(`codegen decisions — only the emission path differs, and the direct printer`);
-      write(`reaches the hand-written kernel. The 80% invariant is met by this backend.`);
-    } else if (q("direct") >= q("mlir") - 1) {
-      write(`<span class="warn">The tax is ours, not MLIR's.</span>  The direct printer lands with`);
-      write(`the MLIR path, so the cost is in the IR or the codegen decisions both share.`);
-      write(`MLIR is exonerated; optimise inside it.`);
-    } else {
-      write(`<span class="warn">Partial.</span>  The direct printer sits between the two: some of the`);
-      write(`gap is the chain and some is ours. Both halves are now bounded.`);
-    }
-    write("");
-  }
-  if (q("mlirNoOpt") && q("mlir")) {
-    const d = q("mlirNoOpt") - q("mlir");
-    write(`canonicalize+cse+licm bought   ${f(q("mlirNoOpt") / q("mlir"), 2)}x   ` +
-          `<span class="dim">(${q("mlirNoOpt")}q → ${q("mlir")}q, ${d >= 0 ? "+" : ""}${d}q)</span>`);
-  }
-  if (q("mlirUnroll") && q("mlir")) {
-    write(`unrolling the k loop bought    ${f(q("mlir") / q("mlirUnroll"), 2)}x   ` +
-          `<span class="dim">(${q("mlir")}q → ${q("mlirUnroll")}q)</span>`);
-    if (q("hand")) {
-      write(`  unrolled vs hand-written     ${f(q("mlirUnroll") / q("hand"), 2)}x`);
-    }
-  }
-  if (q("roundtrip") && q("direct")) {
-    write("");
-    write(`naga round-trip cost           ${f(q("roundtrip") / q("direct"), 2)}x   ` +
-          `<span class="dim">(${q("direct")}q → ${q("roundtrip")}q; gains loop{}/continuing{}, ` +
-          `no phi, no bitcast)</span>`);
-    if (q("roundtrip") <= q("direct") + 1) {
-      write(`  <span class="ok">the loop form is innocent</span> — the cost is the 144 phi ` +
-            `variables and/or the 4 bitcasts, which only the MLIR path has.`);
-    } else if (q("roundtrip") >= q("mlir") - 1) {
-      write(`  <span class="warn">the loop form is the cost</span> — naga's reconstruction alone ` +
-            `reproduces the gap, with no MLIR involved.`);
-    } else {
-      write(`  <span class="warn">partial</span> — the loop form accounts for some of it, ` +
-            `phi/bitcast for the rest.`);
-    }
-  }
-  if (q("hand") && q("handRW")) {
-    write(`hand: read → read_write        ${f(q("handRW") / q("hand"), 2)}x`);
-  }
-  if (q("mlir") && q("mlirRO")) {
-    write(`tessera: read_write → read     ${f(q("mlirRO") / q("mlir"), 2)}x`);
-  }
-  write("");
-
-  // ---- correctness, once, after timing -------------------------------------
-  write("── correctness ────────────────────────────────────");
-  for (const { v, r } of runners) results[v.key] = await r.result();
-  for (const { v } of runners) {
-    const s2 = summarize(results[v.key]);
-    if (s2.nans || s2.max === 0) write(`  <span class="bad">${v.label}: nans ${s2.nans} max ${s2.max}</span>`);
-  }
-  if (results.hand && results.mlir) {
-    const same = bitExactCount(results.mlir, results.hand);
-    write(`tessera vs hand-written   bit-exact ${same} / ${results.hand.length}` +
-          (same === results.hand.length
-            ? `  <span class="ok">IDENTICAL</span>` : `  <span class="bad">DIVERGENT</span>`));
-  }
-  if (results.direct && results.hand) {
-    const same = bitExactCount(results.direct, results.hand);
-    write(`direct WGSL vs hand-written   bit-exact ${same} / ${results.hand.length}` +
-          (same === results.hand.length
-            ? `  <span class="ok">IDENTICAL</span>` : `  <span class="bad">DIVERGENT</span>`));
-  }
-  for (const k of ["handRW", "mlirRO", "mlirNoOpt", "mlirUnroll", "roundtrip"]) {
-    if (!results[k]) continue;
-    const base = k === "handRW" ? results.hand
-               : k === "roundtrip" ? results.direct : results.mlir;
-    const same = bitExactCount(results[k], base);
-    if (same !== base.length) write(`  <span class="bad">probe ${k} changed the numbers — ignore its timing</span>`);
-  }
-  write("");
-  const gpu = { out: results.hand ?? results.mlir };
-  for (const { r } of runners) r.destroy();
-
-  // ---- oracles ------------------------------------------------------------
-  // Two references, differing in ONE rounding, plus the error scale. The point
-  // is to identify which arithmetic the GPU actually performed rather than to
-  // absorb the difference into a tolerance.
-  write("── oracles ────────────────────────────────────────");
-  write(`<span class="dim">three CPU passes over ${(2 * M * N * K / 1e6).toFixed(0)}M flops, this blocks for a few seconds…</span>`);
-  await yieldToPaint();
-
-  let t1 = performance.now();
-  const wantPlain = matmulReluF32(a, b, DIMS, { contract: false });
-  write(`no-FMA   (two roundings per step)   ${f(performance.now() - t1, 0)} ms`);
-  await yieldToPaint();
-
-  t1 = performance.now();
-  const wantFma = matmulReluF32(a, b, DIMS, { contract: true });
-  write(`FMA      (one rounding per step)    ${f(performance.now() - t1, 0)} ms`);
-  await yieldToPaint();
-
-  t1 = performance.now();
-  const absSum = dotAbsSum(a, b, DIMS);
-  write(`SUM|a·b| (the error scale)          ${f(performance.now() - t1, 0)} ms`);
-  write("");
-
-  // ---- which arithmetic did the GPU do? -----------------------------------
-  write("── which arithmetic did the GPU do? ───────────────");
-  const exactPlain = bitExactCount(gpu.out, wantPlain);
-  const exactFma = bitExactCount(gpu.out, wantFma);
-  const cmpPlain = allClose(gpu.out, wantPlain, { rtol: 1e-5, atol: 1e-6 });
-  const cmpFma = allClose(gpu.out, wantFma, { rtol: 1e-5, atol: 1e-6 });
-  const pct = (n) => `${(100 * n / gpu.out.length).toFixed(4)}%`;
-
-  write(`vs no-FMA   bit-exact ${exactPlain} / ${gpu.out.length}  (${pct(exactPlain)})   maxAbsDiff ${cmpPlain.maxAbsDiff.toExponential(3)}`);
-  write(`vs FMA      bit-exact ${exactFma} / ${gpu.out.length}  (${pct(exactFma)})   maxAbsDiff ${cmpFma.maxAbsDiff.toExponential(3)}`);
-  write("");
-
-  const fmaWins = exactFma > exactPlain;
-  if (fmaWins) {
-    write(`<span class="ok">The GPU contracted.</span> It matches the single-rounding reference far more`);
-    write(`closely, which is the backend fusing acc + a*b into one fused multiply-add.`);
-    write(`<span class="dim">Residual mismatches against the FMA oracle are double-rounding in the</span>`);
-    write(`<span class="dim">emulation (f64 then f32, vs a true fma's single rounding), expected at</span>`);
-    write(`<span class="dim">a rate of ~2^-29 per operation.</span>`);
-  } else {
-    write(`<span class="warn">The GPU did NOT contract</span> — it matches the two-rounding reference.`);
-    write(`<span class="dim">Then a bit-exact node oracle is achievable for this kernel after all.</span>`);
-  }
-  write("");
-
-  // ---- the principled check ------------------------------------------------
-  // A tolerance of the form atol + rtol*|result| is the wrong instrument for a
-  // reduction: error accumulates against the partial sums, not the result, so
-  // cancellation near zero fails it no matter how correct the kernel is.
-  write("── error bound (the check that means something) ───");
-  const want = fmaWins ? wantFma : wantPlain;
-  const bound = withinErrorBound(gpu.out, want, absSum, K);
-  write(`K = ${K}   u = 2^-24   gamma_K = ${bound.gammaK.toExponential(3)}`);
-  write(`bound per element:  |gpu - cpu|  <=  gamma_K * SUM|a·b|`);
-  write("");
-  write(`violations   ${bound.violations} / ${gpu.out.length}`);
-  write(`worst ratio  ${f(bound.worstRatio, 4)}  <span class="dim">(observed / permitted; < 1 is inside the bound)</span>`);
-  if (bound.worstIndex >= 0) {
-    const r = Math.floor(bound.worstIndex / N), c = bound.worstIndex % N;
-    write(`  at c[${r}][${c}]   diff ${bound.worstDiff.toExponential(3)}   permitted ${bound.worstBound.toExponential(3)}`);
-  }
-  write("");
-
-  if (bound.ok) {
-    write(`<span class="ok">PASS</span>  every element is inside what f32 arithmetic permits,`);
-    write(`using ${(100 * bound.worstRatio).toFixed(2)}% of the error budget at worst.`);
-    write("");
-    write(`<span class="dim">For contrast, the naive rtol/atol test reports ${cmpFma.failures || cmpPlain.failures} failures — all of them</span>`);
-    write(`<span class="dim">near-zero outputs where relative error is meaningless. That test was the</span>`);
-    write(`<span class="dim">bug, not the kernel.</span>`);
-  } else {
-    write(`<span class="bad">FAIL</span>  ${bound.violations} elements exceed the theoretical bound.`);
-    write(`<span class="dim">This is not a tolerance question — the kernel is computing something</span>`);
-    write(`<span class="dim">floating point does not explain. Suspect the barriers or the As/Bs</span>`);
-    write(`<span class="dim">staging index arithmetic.</span>`);
-  }
-}
-</script>
+<footer>
+  Reading order, if this is the first visit: <b>matmul</b> for what the compiler emits and
+  how it is measured, <b>ragged</b> for the thing the type system is for, <b>rowwise</b>
+  for whether any of it generalises.<br>
+  Background in <code>docs/</code> — 001 the language surface, 002 performance,
+  003 prior art, 004 whether this is a compiler or a template.
+</footer>
 
 </body>
 </html>
