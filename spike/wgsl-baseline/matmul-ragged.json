@@ -1,7 +1,7 @@
 {
   "name": "matmul_relu_ragged",
   "entryPoint": "matmul_relu_ragged",
-  "backend": "wgsl",
+  "backend": "mlir",
   "schedule": "matmul",
   "dtype": "f32",
   "workgroup": [

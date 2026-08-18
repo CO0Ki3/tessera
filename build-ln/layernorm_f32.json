@@ -1,0 +1,55 @@
+{
+  "name": "layernorm_f32",
+  "entryPoint": "layernorm_f32",
+  "backend": "wgsl",
+  "schedule": "rowwise",
+  "dtype": "f32",
+  "workgroup": [
+    16,
+    16,
+    1
+  ],
+  "dispatch": [
+    16,
+    1,
+    1
+  ],
+  "fragment": [
+    4,
+    4
+  ],
+  "workgroupBytes": 4096,
+  "axes": {
+    "m": 1024,
+    "n": 750
+  },
+  "bindings": [
+    {
+      "name": "x",
+      "binding": 0,
+      "group": 0,
+      "mode": "read",
+      "elements": 768000,
+      "axes": [
+        "m",
+        "n"
+      ]
+    },
+    {
+      "name": "y",
+      "binding": 1,
+      "group": 0,
+      "mode": "write",
+      "elements": 768000,
+      "axes": [
+        "m",
+        "n"
+      ]
+    }
+  ],
+  "maskedLoads": [
+    "x:n",
+    "y:n"
+  ],
+  "pad": "zero"
+}

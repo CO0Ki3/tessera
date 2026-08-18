@@ -36,198 +36,213 @@ fn function_2() {
     let _e58 = global_5;
     let _e59 = global_6;
     let _e63 = global_7;
-    let _e70 = ((_e59.y * 16u) + _e59.x);
-    let _e71 = (_e58.y * 64u);
+    let _e68 = ((_e59.y * 16u) + _e59.x);
+    let _e70 = (_e58.y * 64u);
     let _e72 = (_e58.x * 64u);
+    local_3[0u] = 0f;
+    local_3[1u] = 0f;
+    local_3[2u] = 0f;
+    local_3[3u] = 0f;
+    local_3[4u] = 0f;
+    local_3[5u] = 0f;
+    local_3[6u] = 0f;
+    local_3[7u] = 0f;
+    local_3[8u] = 0f;
+    local_3[9u] = 0f;
+    local_3[10u] = 0f;
+    local_3[11u] = 0f;
+    local_3[12u] = 0f;
+    local_3[13u] = 0f;
+    local_3[14u] = 0f;
+    local_3[15u] = 0f;
     loop {
-        let _e73 = local_5;
-        if all((vec2<u32>(0u, 0u) == _e73)) {
+        let _e89 = local_5;
+        if all((vec2<u32>(0u, 0u) == _e89)) {
             break;
         }
-        local_5 = (_e73 - vec2<u32>(select(0u, 1u, (_e73.y == 0u)), 1u));
-        let _e81 = local_1;
-        if (_e81 < 512u) {
+        local_5 = (_e89 - vec2<u32>(select(0u, 1u, (_e89.y == 0u)), 1u));
+        let _e97 = local_1;
+        if (_e97 < 512u) {
         } else {
             break;
         }
-        local_4 = _e70;
+        local_4 = _e68;
         loop {
-            let _e83 = local_6;
-            if all((vec2<u32>(0u, 0u) == _e83)) {
+            let _e99 = local_6;
+            if all((vec2<u32>(0u, 0u) == _e99)) {
                 break;
             }
-            local_6 = (_e83 - vec2<u32>(select(0u, 1u, (_e83.y == 0u)), 1u));
-            let _e91 = local_4;
-            if (_e91 < 1024u) {
+            local_6 = (_e99 - vec2<u32>(select(0u, 1u, (_e99.y == 0u)), 1u));
+            let _e107 = local_4;
+            if (_e107 < 1024u) {
             } else {
                 break;
             }
-            let _e93 = local_4;
-            let _e94 = function_(_e93, 16u);
-            let _e95 = local_4;
-            let _e96 = function_1(_e95, 16u);
-            let _e98 = local_1;
-            let _e102 = local_4;
-            let _e104 = global.member[(((_e71 + _e94) * 512u) + (_e98 + _e96))];
-            global_3[_e102] = _e104;
+            let _e109 = local_4;
+            let _e110 = function_(_e109, 16u);
+            let _e111 = local_4;
+            let _e112 = function_1(_e111, 16u);
+            let _e114 = local_1;
+            let _e118 = local_4;
+            let _e120 = global.member[(((_e70 + _e110) * 512u) + (_e114 + _e112))];
+            global_3[_e118] = _e120;
             continue;
             continuing {
-                let _e106 = local_4;
-                local_4 = (_e106 + 256u);
+                let _e122 = local_4;
+                local_4 = (_e122 + 256u);
             }
         }
-        local_2 = _e70;
+        local_2 = _e68;
         loop {
-            let _e108 = local_7;
-            if all((vec2<u32>(0u, 0u) == _e108)) {
+            let _e124 = local_7;
+            if all((vec2<u32>(0u, 0u) == _e124)) {
                 break;
             }
-            local_7 = (_e108 - vec2<u32>(select(0u, 1u, (_e108.y == 0u)), 1u));
-            let _e116 = local_2;
-            if (_e116 < 1024u) {
+            local_7 = (_e124 - vec2<u32>(select(0u, 1u, (_e124.y == 0u)), 1u));
+            let _e132 = local_2;
+            if (_e132 < 1024u) {
             } else {
                 break;
             }
-            let _e118 = local_2;
-            let _e119 = function_(_e118, 64u);
-            let _e120 = local_2;
-            let _e121 = function_1(_e120, 64u);
-            let _e122 = local_1;
-            let _e127 = local_2;
-            let _e129 = global_1.member[(((_e122 + _e119) * 768u) + (_e72 + _e121))];
-            global_4[_e127] = _e129;
+            let _e134 = local_2;
+            let _e135 = function_(_e134, 64u);
+            let _e136 = local_2;
+            let _e137 = function_1(_e136, 64u);
+            let _e138 = local_1;
+            let _e143 = local_2;
+            let _e145 = global_1.member[(((_e138 + _e135) * 768u) + (_e72 + _e137))];
+            global_4[_e143] = _e145;
             continue;
             continuing {
-                let _e131 = local_2;
-                local_2 = (_e131 + 256u);
+                let _e147 = local_2;
+                local_2 = (_e147 + 256u);
             }
         }
         workgroupBarrier();
         local = 0u;
         loop {
-            let _e133 = local_8;
-            if all((vec2<u32>(0u, 0u) == _e133)) {
+            let _e149 = local_8;
+            if all((vec2<u32>(0u, 0u) == _e149)) {
                 break;
             }
-            local_8 = (_e133 - vec2<u32>(select(0u, 1u, (_e133.y == 0u)), 1u));
-            let _e141 = local;
-            if (_e141 < 16u) {
+            local_8 = (_e149 - vec2<u32>(select(0u, 1u, (_e149.y == 0u)), 1u));
+            let _e157 = local;
+            if (_e157 < 16u) {
             } else {
                 break;
             }
-            let _e146 = local;
-            let _e149 = global_3[((((_e59.y * 4u) + 0u) * 16u) + _e146)];
-            let _e153 = local;
-            let _e156 = global_3[((((_e59.y * 4u) + 1u) * 16u) + _e153)];
+            let _e159 = local_1;
             let _e160 = local;
-            let _e163 = global_3[((((_e59.y * 4u) + 2u) * 16u) + _e160)];
-            let _e167 = local;
-            let _e170 = global_3[((((_e59.y * 4u) + 3u) * 16u) + _e167)];
-            let _e171 = local;
-            let _e177 = global_4[((_e171 * 64u) + ((_e59.x * 4u) + 0u))];
-            let _e178 = local;
-            let _e184 = global_4[((_e178 * 64u) + ((_e59.x * 4u) + 1u))];
-            let _e185 = local;
-            let _e191 = global_4[((_e185 * 64u) + ((_e59.x * 4u) + 2u))];
-            let _e192 = local;
-            let _e198 = global_4[((_e192 * 64u) + ((_e59.x * 4u) + 3u))];
-            let _e200 = local_3[0u];
-            local_3[0u] = (_e200 + (_e149 * _e177));
-            let _e205 = local_3[1u];
-            local_3[1u] = (_e205 + (_e149 * _e184));
-            let _e210 = local_3[2u];
-            local_3[2u] = (_e210 + (_e149 * _e191));
-            let _e215 = local_3[3u];
-            local_3[3u] = (_e215 + (_e149 * _e198));
-            let _e220 = local_3[4u];
-            local_3[4u] = (_e220 + (_e156 * _e177));
-            let _e225 = local_3[5u];
-            local_3[5u] = (_e225 + (_e156 * _e184));
-            let _e230 = local_3[6u];
-            local_3[6u] = (_e230 + (_e156 * _e191));
-            let _e235 = local_3[7u];
-            local_3[7u] = (_e235 + (_e156 * _e198));
-            let _e240 = local_3[8u];
-            local_3[8u] = (_e240 + (_e163 * _e177));
-            let _e245 = local_3[9u];
-            local_3[9u] = (_e245 + (_e163 * _e184));
-            let _e250 = local_3[10u];
-            local_3[10u] = (_e250 + (_e163 * _e191));
-            let _e255 = local_3[11u];
-            local_3[11u] = (_e255 + (_e163 * _e198));
-            let _e260 = local_3[12u];
-            local_3[12u] = (_e260 + (_e170 * _e177));
-            let _e265 = local_3[13u];
-            local_3[13u] = (_e265 + (_e170 * _e184));
-            let _e270 = local_3[14u];
-            local_3[14u] = (_e270 + (_e170 * _e191));
-            let _e275 = local_3[15u];
-            local_3[15u] = (_e275 + (_e170 * _e198));
+            let _e161 = (_e159 + _e160);
+            let _e165 = local_1;
+            let _e169 = global_3[((((_e59.y * 4u) + 0u) * 16u) + (_e161 - _e165))];
+            let _e173 = local_1;
+            let _e177 = global_3[((((_e59.y * 4u) + 1u) * 16u) + (_e161 - _e173))];
+            let _e181 = local_1;
+            let _e185 = global_3[((((_e59.y * 4u) + 2u) * 16u) + (_e161 - _e181))];
+            let _e189 = local_1;
+            let _e193 = global_3[((((_e59.y * 4u) + 3u) * 16u) + (_e161 - _e189))];
+            let _e194 = local_1;
+            let _e201 = global_4[(((_e161 - _e194) * 64u) + ((_e59.x * 4u) + 0u))];
+            let _e202 = local_1;
+            let _e209 = global_4[(((_e161 - _e202) * 64u) + ((_e59.x * 4u) + 1u))];
+            let _e210 = local_1;
+            let _e217 = global_4[(((_e161 - _e210) * 64u) + ((_e59.x * 4u) + 2u))];
+            let _e218 = local_1;
+            let _e225 = global_4[(((_e161 - _e218) * 64u) + ((_e59.x * 4u) + 3u))];
+            let _e227 = local_3[0u];
+            local_3[0u] = (_e227 + (_e169 * _e201));
+            let _e232 = local_3[1u];
+            local_3[1u] = (_e232 + (_e169 * _e209));
+            let _e237 = local_3[2u];
+            local_3[2u] = (_e237 + (_e169 * _e217));
+            let _e242 = local_3[3u];
+            local_3[3u] = (_e242 + (_e169 * _e225));
+            let _e247 = local_3[4u];
+            local_3[4u] = (_e247 + (_e177 * _e201));
+            let _e252 = local_3[5u];
+            local_3[5u] = (_e252 + (_e177 * _e209));
+            let _e257 = local_3[6u];
+            local_3[6u] = (_e257 + (_e177 * _e217));
+            let _e262 = local_3[7u];
+            local_3[7u] = (_e262 + (_e177 * _e225));
+            let _e267 = local_3[8u];
+            local_3[8u] = (_e267 + (_e185 * _e201));
+            let _e272 = local_3[9u];
+            local_3[9u] = (_e272 + (_e185 * _e209));
+            let _e277 = local_3[10u];
+            local_3[10u] = (_e277 + (_e185 * _e217));
+            let _e282 = local_3[11u];
+            local_3[11u] = (_e282 + (_e185 * _e225));
+            let _e287 = local_3[12u];
+            local_3[12u] = (_e287 + (_e193 * _e201));
+            let _e292 = local_3[13u];
+            local_3[13u] = (_e292 + (_e193 * _e209));
+            let _e297 = local_3[14u];
+            local_3[14u] = (_e297 + (_e193 * _e217));
+            let _e302 = local_3[15u];
+            local_3[15u] = (_e302 + (_e193 * _e225));
             continue;
             continuing {
-                let _e279 = local;
-                local = (_e279 + 1u);
+                let _e306 = local;
+                local = (_e306 + 1u);
             }
         }
         workgroupBarrier();
         continue;
         continuing {
-            let _e281 = local_1;
-            local_1 = (_e281 + 16u);
+            let _e308 = local_1;
+            local_1 = (_e308 + 16u);
         }
     }
-    let _e285 = ((_e71 + (_e59.y * 4u)) + 0u);
-    let _e292 = local_3[0u];
-    let _e294 = local_3[0u];
-    global_2.member[((_e285 * 768u) + ((_e72 + (_e59.x * 4u)) + 0u))] = select(0f, _e292, (_e294 > 0f));
-    let _e304 = local_3[1u];
-    let _e306 = local_3[1u];
-    global_2.member[((_e285 * 768u) + ((_e72 + (_e59.x * 4u)) + 1u))] = select(0f, _e304, (_e306 > 0f));
-    let _e316 = local_3[2u];
-    let _e318 = local_3[2u];
-    global_2.member[((_e285 * 768u) + ((_e72 + (_e59.x * 4u)) + 2u))] = select(0f, _e316, (_e318 > 0f));
-    let _e328 = local_3[3u];
-    let _e330 = local_3[3u];
-    global_2.member[((_e285 * 768u) + ((_e72 + (_e59.x * 4u)) + 3u))] = select(0f, _e328, (_e330 > 0f));
-    let _e336 = ((_e71 + (_e59.y * 4u)) + 1u);
-    let _e343 = local_3[4u];
-    let _e345 = local_3[4u];
-    global_2.member[((_e336 * 768u) + ((_e72 + (_e59.x * 4u)) + 0u))] = select(0f, _e343, (_e345 > 0f));
-    let _e355 = local_3[5u];
-    let _e357 = local_3[5u];
-    global_2.member[((_e336 * 768u) + ((_e72 + (_e59.x * 4u)) + 1u))] = select(0f, _e355, (_e357 > 0f));
-    let _e367 = local_3[6u];
-    let _e369 = local_3[6u];
-    global_2.member[((_e336 * 768u) + ((_e72 + (_e59.x * 4u)) + 2u))] = select(0f, _e367, (_e369 > 0f));
-    let _e379 = local_3[7u];
-    let _e381 = local_3[7u];
-    global_2.member[((_e336 * 768u) + ((_e72 + (_e59.x * 4u)) + 3u))] = select(0f, _e379, (_e381 > 0f));
-    let _e387 = ((_e71 + (_e59.y * 4u)) + 2u);
-    let _e394 = local_3[8u];
-    let _e396 = local_3[8u];
-    global_2.member[((_e387 * 768u) + ((_e72 + (_e59.x * 4u)) + 0u))] = select(0f, _e394, (_e396 > 0f));
-    let _e406 = local_3[9u];
-    let _e408 = local_3[9u];
-    global_2.member[((_e387 * 768u) + ((_e72 + (_e59.x * 4u)) + 1u))] = select(0f, _e406, (_e408 > 0f));
-    let _e418 = local_3[10u];
-    let _e420 = local_3[10u];
-    global_2.member[((_e387 * 768u) + ((_e72 + (_e59.x * 4u)) + 2u))] = select(0f, _e418, (_e420 > 0f));
-    let _e430 = local_3[11u];
-    let _e432 = local_3[11u];
-    global_2.member[((_e387 * 768u) + ((_e72 + (_e59.x * 4u)) + 3u))] = select(0f, _e430, (_e432 > 0f));
-    let _e438 = ((_e71 + (_e59.y * 4u)) + 3u);
-    let _e445 = local_3[12u];
-    let _e447 = local_3[12u];
-    global_2.member[((_e438 * 768u) + ((_e72 + (_e59.x * 4u)) + 0u))] = select(0f, _e445, (_e447 > 0f));
-    let _e457 = local_3[13u];
-    let _e459 = local_3[13u];
-    global_2.member[((_e438 * 768u) + ((_e72 + (_e59.x * 4u)) + 1u))] = select(0f, _e457, (_e459 > 0f));
-    let _e469 = local_3[14u];
-    let _e471 = local_3[14u];
-    global_2.member[((_e438 * 768u) + ((_e72 + (_e59.x * 4u)) + 2u))] = select(0f, _e469, (_e471 > 0f));
-    let _e481 = local_3[15u];
-    let _e483 = local_3[15u];
-    global_2.member[((_e438 * 768u) + ((_e72 + (_e59.x * 4u)) + 3u))] = select(0f, _e481, (_e483 > 0f));
+    let _e319 = local_3[0u];
+    let _e321 = local_3[0u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 0u) * 768u) + ((_e72 + (_e59.x * 4u)) + 0u))] = select(0f, _e319, (_e321 > 0f));
+    let _e334 = local_3[1u];
+    let _e336 = local_3[1u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 0u) * 768u) + ((_e72 + (_e59.x * 4u)) + 1u))] = select(0f, _e334, (_e336 > 0f));
+    let _e349 = local_3[2u];
+    let _e351 = local_3[2u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 0u) * 768u) + ((_e72 + (_e59.x * 4u)) + 2u))] = select(0f, _e349, (_e351 > 0f));
+    let _e364 = local_3[3u];
+    let _e366 = local_3[3u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 0u) * 768u) + ((_e72 + (_e59.x * 4u)) + 3u))] = select(0f, _e364, (_e366 > 0f));
+    let _e379 = local_3[4u];
+    let _e381 = local_3[4u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 1u) * 768u) + ((_e72 + (_e59.x * 4u)) + 0u))] = select(0f, _e379, (_e381 > 0f));
+    let _e394 = local_3[5u];
+    let _e396 = local_3[5u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 1u) * 768u) + ((_e72 + (_e59.x * 4u)) + 1u))] = select(0f, _e394, (_e396 > 0f));
+    let _e409 = local_3[6u];
+    let _e411 = local_3[6u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 1u) * 768u) + ((_e72 + (_e59.x * 4u)) + 2u))] = select(0f, _e409, (_e411 > 0f));
+    let _e424 = local_3[7u];
+    let _e426 = local_3[7u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 1u) * 768u) + ((_e72 + (_e59.x * 4u)) + 3u))] = select(0f, _e424, (_e426 > 0f));
+    let _e439 = local_3[8u];
+    let _e441 = local_3[8u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 2u) * 768u) + ((_e72 + (_e59.x * 4u)) + 0u))] = select(0f, _e439, (_e441 > 0f));
+    let _e454 = local_3[9u];
+    let _e456 = local_3[9u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 2u) * 768u) + ((_e72 + (_e59.x * 4u)) + 1u))] = select(0f, _e454, (_e456 > 0f));
+    let _e469 = local_3[10u];
+    let _e471 = local_3[10u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 2u) * 768u) + ((_e72 + (_e59.x * 4u)) + 2u))] = select(0f, _e469, (_e471 > 0f));
+    let _e484 = local_3[11u];
+    let _e486 = local_3[11u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 2u) * 768u) + ((_e72 + (_e59.x * 4u)) + 3u))] = select(0f, _e484, (_e486 > 0f));
+    let _e499 = local_3[12u];
+    let _e501 = local_3[12u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 3u) * 768u) + ((_e72 + (_e59.x * 4u)) + 0u))] = select(0f, _e499, (_e501 > 0f));
+    let _e514 = local_3[13u];
+    let _e516 = local_3[13u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 3u) * 768u) + ((_e72 + (_e59.x * 4u)) + 1u))] = select(0f, _e514, (_e516 > 0f));
+    let _e529 = local_3[14u];
+    let _e531 = local_3[14u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 3u) * 768u) + ((_e72 + (_e59.x * 4u)) + 2u))] = select(0f, _e529, (_e531 > 0f));
+    let _e544 = local_3[15u];
+    let _e546 = local_3[15u];
+    global_2.member[((((_e70 + (_e59.y * 4u)) + 3u) * 768u) + ((_e72 + (_e59.x * 4u)) + 3u))] = select(0f, _e544, (_e546 > 0f));
     return;
 }
 

@@ -224,6 +224,36 @@ console.log("\none emitter");
   else bad(`emit-wgsl.ts branches on: ${families.join(", ")}`);
 }
 
+// ---- 2e. the harness artifacts are what they claim to be -------------------
+// The default backend flipped to direct, and for a while `npm run demo` built the
+// "via MLIR" artifacts without --backend=mlir. The pages then compared the direct
+// backend to itself under two labels and nobody noticed until a stale probe asked
+// for an entry point that no longer existed.
+console.log("\nharness artifacts");
+{
+  const H = "spike/wgsl-baseline";
+  const pairs = [["matmul-mlir", "matmul-direct"], ["matmul-ragged", "matmul-ragged-direct"]];
+  for (const [a, b] of pairs) {
+    try {
+      const wa = readFileSync(join(H, `${a}.wgsl`), "utf8");
+      const wb = readFileSync(join(H, `${b}.wgsl`), "utf8");
+      if (wa === wb) bad(`${a}.wgsl and ${b}.wgsl are identical — one backend built twice`);
+      else ok(`${a} and ${b} are genuinely different backends ` +
+              `(${wa.split("\n").length} vs ${wb.split("\n").length} lines)`);
+    } catch { bad(`${a}/${b}: missing — run npm run demo`); }
+  }
+  // Every probe's manifest entry point must exist in the shader it points at.
+  for (const [wgsl, man] of [["probe-tessera-ro", "matmul-mlir"],
+                             ["probe-direct-roundtrip", "probe-direct-roundtrip"]]) {
+    try {
+      const src = readFileSync(join(H, `${wgsl}.wgsl`), "utf8");
+      const ep = JSON.parse(readFileSync(join(H, `${man}.json`), "utf8")).entryPoint;
+      if (src.includes(`fn ${ep}(`)) ok(`${wgsl} declares the entry point ${man}.json names`);
+      else bad(`${wgsl}.wgsl has no fn ${ep} — the probe is stale, regenerate it`);
+    } catch { bad(`${wgsl}: missing — run npm run demo`); }
+  }
+}
+
 // ---- 3. our own source ----------------------------------------------------
 console.log("\ncompiler source");
 try {

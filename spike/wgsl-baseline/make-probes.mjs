@@ -28,6 +28,12 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Resolve against this file, not the caller's cwd: `npm run demo` invokes it from
+// the repo root and it reads and writes its siblings.
+process.chdir(dirname(fileURLToPath(import.meta.url)));
 
 // ---- probe A1: hand-written, but with the inputs made read_write ------------
 const hand = readFileSync("matmul.wgsl", "utf8");

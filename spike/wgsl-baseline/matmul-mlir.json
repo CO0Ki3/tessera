@@ -1,7 +1,7 @@
 {
   "name": "matmul_relu_f32",
-  "entryPoint": "matmul_relu_f32",
-  "backend": "wgsl",
+  "entryPoint": "matmul_relu_f32_",
+  "backend": "mlir",
   "schedule": "matmul",
   "dtype": "f32",
   "workgroup": [
