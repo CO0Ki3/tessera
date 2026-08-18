@@ -254,9 +254,13 @@ async function main() {
   const cmp = (aKey, bKey) => {
     const a = q(aKey), b = q(bKey);
     if (!a || !b) return null;
-    return { a, b, resolvable: Math.abs(a - b) > 1, text: Math.abs(a - b) > 1
+    // One quantum is the floor, but a row whose own samples span three quanta
+    // has not established anything at two. Whichever is larger is the yardstick.
+    const noise = Math.max(1, stats.get(aKey).spreadQ, stats.get(bKey).spreadQ);
+    const resolvable = Math.abs(a - b) > noise;
+    return { a, b, noise, resolvable, text: resolvable
       ? `${f(a / b, 2)}x`
-      : `<span class="dim">indistinguishable</span>` };
+      : `<span class="dim">indistinguishable (\u0394${Math.abs(a - b)}q, noise ${noise}q)</span>` };
   };
   write(`  ${"kernel".padEnd(34)}  ${"min".padStart(5)} ${"med".padStart(5)} ${"max".padStart(5)}   spread   GFLOP/s`);
   for (const { v } of runners) {

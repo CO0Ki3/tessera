@@ -151,11 +151,22 @@ async function main() {
               `this row is not a measurement`);
       }
       if (sg) {
+        // What makes a difference real is that it exceeds this measurement's own
+        // run-to-run variation — NOT that it exceeds the instrument's smallest
+        // unit. Batching separated those two: resolution is now 1/64 q while the
+        // observed spread is about 0.03 q, so a difference of 0.02 q clears the
+        // resolution and is still nothing but noise. Taking the larger of the
+        // two is the yardstick; taking the resolution alone would manufacture
+        // findings, which is the same mistake as docs/002 2a in the other
+        // direction.
+        const noise = Math.max(st.spreadQ, sg.spreadQ, 1 / st.batch);
         const d = Math.abs(sg.minQ - st.minQ);
         write(`typegpu   min ${qq(sg.minQ)}q  med ${qq(sg.medianQ)}q` +
-              (d * st.batch <= 1
-                ? `   <span class="dim">— within one raw quantum of the hand-rolled path</span>`
-                : `   <span class="warn">— ${(sg.minQ / st.minQ).toFixed(2)}x, outside the instrument's floor</span>`));
+              (d <= noise
+                ? `   <span class="dim">— indistinguishable (\u0394${d.toFixed(3)}q, noise ` +
+                  `${noise.toFixed(3)}q)</span>`
+                : `   <span class="warn">— ${(sg.minQ / st.minQ).toFixed(2)}x, \u0394${d.toFixed(3)}q ` +
+                  `against ${noise.toFixed(3)}q of noise</span>`));
       } else if (!TYPEGPU.available) {
         write(`typegpu   <span class="dim">${TYPEGPU.reason}</span>`);
       }

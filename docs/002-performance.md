@@ -117,6 +117,25 @@ allocation happens once, outside the pass, and was never in the timed region.
 `measureInterleaved` now returns `belowResolution` per row, and both pages print
 a warning rather than a plausible-looking number when it is set.
 
+Batched, the rowwise kernels measure 0.45–0.50 quanta per dispatch with a spread
+of **0.03q** — a real number, where `0q` and `1q` were not.
+
+### Which changes what counts as a difference
+
+Resolution and noise were the same thing while both were one quantum. They are
+not any more: resolution is 1/64 q and the observed spread is 0.03 q, about two
+raw quanta. A difference of 0.02 q now clears the resolution and is still
+nothing. So the yardstick is **`max(resolution, observed spread)`**, not the
+quantum — using resolution alone would manufacture findings, which is this
+section's own mistake pointed the other way.
+
+Verified by replaying three recorded sessions through the corrected rule rather
+than by argument: every null result is named as one (probes A1, A2, B, and
+TypeGPU-vs-raw), and every real finding survives — the MLIR chain at 1.83×, the
+naga round-trip at 1.86×, unrolling at 0.73×. Probe B in §3 is quoted as `1.00×`
+above; the harness now prints `indistinguishable` for it, which is the same
+claim stated as what it is.
+
 ## 3. What has been ruled out
 
 Three hypotheses, each probed, all refuted. Recorded so nobody re-runs them.

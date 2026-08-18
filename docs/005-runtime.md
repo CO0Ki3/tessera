@@ -252,18 +252,27 @@ WGSL ↔ TypeGPU layout: index, group, element type, access mode, name).
 Measured:
 
 ```
-matmul      raw 7q    TypeGPU 6q     bit-exact 786432 / 786432   IDENTICAL
-ragged      raw 7q    TypeGPU 7q     bit-exact 750000 / 750000   IDENTICAL
-softmax                              bit-exact 768000 / 768000   IDENTICAL
-layernorm                            bit-exact 768000 / 768000   IDENTICAL
+                  raw        TypeGPU    Δ        noise    bit-exact
+matmul            7q         6q         1q       1q       786432 / 786432   IDENTICAL
+ragged            7q         7q         0q       4q       750000 / 750000   IDENTICAL
+softmax           0.48q      0.50q      0.012q   0.03q    768000 / 768000   IDENTICAL
+layernorm         0.45q      0.45q      0.000q   0.03q    768000 / 768000   IDENTICAL
 ```
 
-**The bit-identity is the result; the timings on the rowwise kernels were not.**
-softmax and layernorm first measured `min 1q` and `min 0q`, which is not a fast
-kernel but an unmeasured one — the whole timed region fit inside one quantum. The
-page now batches 64 dispatches per timed pass and prints fractional quanta, and
-`measureInterleaved` returns `belowResolution` so a row like that says so instead
-of looking like data. See [`docs/002`](002-performance.md) §2a.
+**The layer is free on all four, and the rowwise rows are the ones that say it
+with any precision.** softmax and layernorm first measured `min 1q` and `min 0q`,
+which is not a fast kernel but an unmeasured one — the whole timed region fit
+inside one quantum. Batching 64 dispatches per timed pass brought the run-to-run
+spread down to 0.03q, so "indistinguishable" there means a difference below 6% of
+the kernel, not below the instrument's coarsest unit.
+
+That also moved the yardstick. With resolution at 1/64 q and noise at 0.03q, a
+difference can clear the resolution and still be nothing — so the pages compare
+against `max(resolution, observed spread)` rather than against the quantum.
+Checking the correction against three real sessions: every null result
+(probes A1, A2, B, and TypeGPU-vs-raw) is now named as one, and every real
+finding survives (the MLIR chain 1.83×, the naga round-trip 1.86×, unrolling
+0.73×). See [`docs/002`](002-performance.md) §2a.
 
 ### One constructor, because three would rot
 
