@@ -308,20 +308,36 @@ export function compileToIR(entryFile: string): KernelIR {
   // ---- axes -------------------------------------------------------------
   const gridT = propType(checker, spec, "grid") ?? fail(specNode, "spec.grid is missing");
   const grid = tupleElements(checker, gridT).map((t) => readAxis(checker, t, "grid"));
-  if (grid.length !== 2) fail(specNode, `spec.grid must have exactly 2 axes, got ${grid.length}`);
+  if (grid.length < 1 || grid.length > 3) {
+    fail(specNode, `spec.grid must have 1-3 axes (WebGPU dispatches in 3 dimensions), got ${grid.length}`);
+  }
 
   const reduceT = propType(checker, spec, "reduce") ?? fail(specNode, "spec.reduce is missing");
   const reduce = tupleElements(checker, reduceT).map((t) => readAxis(checker, t, "reduce"));
   if (reduce.length !== 1) {
     fail(specNode, `this build supports exactly 1 reduce axis, got ${reduce.length}`);
   }
+  // Tile coherence, when a tile is declared. This used to be a tsc error via the
+  // kernel() signature, which cost a seven-diagnostic cascade for one mistake and
+  // hard-wired "two grid axes, one reduce axis blocked at bk" into the surface.
+  // Reported here instead: one error, and kernels that are not matmul-shaped can
+  // exist. docs/001 §7 listed suppressing that cascade as outstanding work.
+  const tileDecl = propType(checker, spec, "tile");
+  if (tileDecl && grid.length === 2) {
+    const named: [string, number, number][] = [
+      [grid[0].name, grid[0].block, tile.bm],
+      [grid[1].name, grid[1].block, tile.bn],
+      [reduce[0].name, reduce[0].block, tile.bk],
+    ];
+    for (const [nm, got, want] of named) {
+      if (got !== want) {
+        fail(specNode, `TSA0051: axis "${nm}" is blocked at ${got}, but the tile says ${want}`);
+      }
+    }
+  }
 
   // Tile/axis coherence — the surface types enforce this too, but the message
   // here names the mismatch directly instead of cascading.
-  if (grid[0].block !== tile.bm) fail(specNode, `grid axis "${grid[0].name}" is blocked at ${grid[0].block}, tile.bm is ${tile.bm}`);
-  if (grid[1].block !== tile.bn) fail(specNode, `grid axis "${grid[1].name}" is blocked at ${grid[1].block}, tile.bn is ${tile.bn}`);
-  if (reduce[0].block !== tile.bk) fail(specNode, `reduce axis "${reduce[0].name}" is blocked at ${reduce[0].block}, tile.bk is ${tile.bk}`);
-
   const byName = new Map([...grid, ...reduce].map((a) => [a.name, a]));
 
   // ---- bindings ---------------------------------------------------------

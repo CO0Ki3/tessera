@@ -1,6 +1,6 @@
 # 004 — The falsification test: is this a compiler or a template?
 
-Status: **criteria fixed, experiment not yet run.**
+Status: **in progress.** Surface generalised; item 6 failed as predicted, and worse.
 
 Written *before* attempting the second kernel, on purpose. The failure mode this
 guards against is reading whatever happens as a success.
@@ -85,3 +85,96 @@ Written before starting, so it can be wrong in public:
 If items 1-4 do not survive, that is the falsification and the recommendation in
 `docs/003` §2 applies: keep the type-level idea, drop the emitter, and build it as a
 layer on TypeGPU instead.
+
+
+---
+
+# Results
+
+## R1. The surface was matmul-shaped, and that was one signature
+
+Attempt 1 — softmax written against the unmodified surface — produced exactly two
+errors, both about shape, neither about derivation:
+
+```
+spec.grid   Source has 1 element(s) but target requires 2
+spec.reduce Type '64' is not assignable to type '16'      <- reduce axis bound to T.bk
+```
+
+The cause was that `kernel()` tied axes to tile dimensions **positionally**:
+`grid[0]` to `T["bm"]`, `grid[1]` to `T["bn"]`, every reduce axis to `T["bk"]`. An
+`Axis` already carries its own block, so that binding bought nothing and cost the
+ability to express any kernel that is not two-parallel-axes-and-one-reduction.
+
+Relaxing it to `grid: readonly [AnyAxis, ...AnyAxis[]]` and `reduce: readonly AnyAxis[]`,
+with `tile` optional, made the softmax spec type-check. **Both matmuls still type-check
+and the emitted MLIR is still byte-identical to the verified reference.**
+
+One check moved from Gate 1 to Gate 2: "this axis is blocked at 32 but the tile says 64"
+is now `TSA0051` from tessera's pass instead of a tsc cascade. docs/001 §7 listed
+suppressing that cascade as outstanding work, so this is a small improvement rather than
+a regression.
+
+## R2. The derivation was mostly not matmul-shaped
+
+Inventory of every line in the front end and IR that assumed the grid's shape:
+
+```
+frontend.ts:311   grid.length !== 2          a fence, not derivation
+frontend.ts:315   reduce.length !== 1        a fence
+frontend.ts:321-323  tile coherence, positional
+ir.ts:95          dispatch: [grid[1].tiles, grid[0].tiles, 1]
+```
+
+Five lines. What is *not* in that list is the part that matters: mask placement
+(`raggedNames` × binding axes), literal extraction from types, binding/axis consistency,
+element counts, and the pad obligation. None of them know what a matmul is.
+
+Generalising the dispatch to 1–3 grid axes was four lines.
+
+**Item 1 (dispatch extents): reused.** The rest of the scorecard needs the emitter.
+
+## R3. Item 6 failed, and deeper than predicted
+
+The prediction was that `Pad extends 0` is hard-coded so the surface would accept the
+wrong identity for a max. Measured:
+
+```ts
+a.tile(at.m, k).pad(-Infinity)
+// Argument of type 'Tile<readonly [64, 16], f32, number>' is not assignable
+// to parameter of type 'Tile<readonly [64, 16], f32, 0>'.
+```
+
+Two problems, not one:
+
+1. `mma` demands `Pad extends 0` — as predicted.
+2. **`-Infinity` has no literal type in TypeScript.** It is unary minus applied to
+   `Infinity`, so it widens to `number`. The identity element for a max cannot be carried
+   in the type as a numeric literal *even in principle*.
+
+So the surface cannot express a non-zero identity at all. Padding a masked max with `0`
+— the kernel that is right until every value in a tail row is negative — is not merely
+allowed, it is the only thing sayable.
+
+**The fix, per §4: change the surface, not the example.** Identities become named symbols
+with singleton types rather than numbers, so the obligation attaches to the operator:
+
+```ts
+a.tile(at.m, k).pad(identity.zero)     // additive identity — what mma demands
+x.tile(at.m, n).pad(identity.negInf)   // max identity — what maxReduce demands
+```
+
+That is a better design than the numeric one it replaces: the identity is tied to the
+reduction operator by name, it is expressible, and `pad(identity.zero)` reaching a max is
+a type error for the same structural reason `pad(1)` reaching a sum already is.
+
+## Scorecard so far
+
+| # | derived thing | verdict |
+|---|---|---|
+| 1 | dispatch extents | **reused** — 4 lines to generalise, no softmax-specific logic |
+| 2 | load masks | not yet tested |
+| 3 | store mask | not yet tested |
+| 4 | flat index arithmetic | not yet tested |
+| 5 | staging + barriers | not yet tested |
+| 6 | identity obligation | **failed** — and the surface cannot express the right answer |

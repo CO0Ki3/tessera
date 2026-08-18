@@ -296,17 +296,28 @@ export interface Kernel<Bs extends BindingList, Req extends FeatureName> {
 }
 
 export declare function kernel<
-  T extends Tiling<DType, number, number, number>,
-  const Grid extends readonly [
-    Axis<string, number, T["bm"], Fitness>,
-    Axis<string, number, T["bn"], Fitness>,
-  ],
-  const Reduce extends readonly Axis<string, number, T["bk"], Fitness>[],
+  const Grid extends readonly [AnyAxis, ...AnyAxis[]],
+  const Reduce extends readonly AnyAxis[],
   const Bs extends BindingList,
+  T extends Tiling<DType, number, number, number> = Tiling<DType, number, number, number>,
 >(
   spec: {
     readonly name: string;
-    readonly tile: T;
+    /**
+     * Optional, and no longer positionally bound to the axes.
+     *
+     * An `Axis` already carries its own block size, so tying grid[0] to `T["bm"]`
+     * in the type was a matmul-shaped assumption: it forced every kernel to have
+     * exactly two parallel axes and one reduction axis blocked at `bk`. softmax
+     * is `grid: [m], reduce: [n]`, and could not be written at all.
+     *
+     * `tiling()` still earns its place as the thing that produces legal block
+     * triples with good autocomplete. What moved is the coherence check —
+     * "this grid axis is blocked at 32 but the tile says 64" is now reported by
+     * tessera's pass as one error, rather than by tsc as a seven-diagnostic
+     * cascade. docs/001 §7 listed suppressing that cascade as outstanding work.
+     */
+    readonly tile?: T;
     readonly grid: Grid;
     readonly reduce: Reduce;
     readonly bindings: Bs;

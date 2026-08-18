@@ -68,6 +68,10 @@ export function derive(
   const [wgx, wgy, wgz] = workgroup;
   const invocations = wgx * wgy * wgz;
 
+  // NOTE: everything below is the MATMUL schedule's budget arithmetic — a 2-D
+  // register fragment and two staged operand tiles. A different schedule has a
+  // different budget. This is the one place in derive() that is not generic over
+  // the axes, and it is honest to say so rather than to pretend otherwise.
   if ((tile.bm * tile.bn) % invocations !== 0) {
     throw new Error(
       `tile ${tile.bm}x${tile.bn} (${tile.bm * tile.bn} elements) is not divisible by ` +
@@ -92,6 +96,13 @@ export function derive(
     workgroup,
     fragment: [tile.bm / wgy, tile.bn / wgx],
     workgroupBytes,
-    dispatch: [grid[1].tiles, grid[0].tiles, 1],
+    // Dispatch is the product of the grid axes' tile counts, in WebGPU's
+    // [x, y, z] order. The matmul convention was [grid[1], grid[0], 1] — column
+    // axis on x — and that is kept for two axes so emitted code does not move.
+    // One axis maps to x; three map directly.
+    dispatch: (grid.length === 2
+      ? [grid[1].tiles, grid[0].tiles, 1]
+      : [grid[0].tiles, grid[1]?.tiles ?? 1, grid[2]?.tiles ?? 1]) as
+      [number, number, number],
   };
 }
