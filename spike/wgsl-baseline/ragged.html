@@ -89,26 +89,50 @@ async function main() {
   write("── run ────────────────────────────────────────────");
   write(`adapter       ${ctx.adapterInfo.vendor} / ${ctx.adapterInfo.architecture}`);
 
-  const src = await (await fetch("./matmul-ragged.wgsl")).text();
-  const { pipeline, messages } = await compile(ctx.device, src, man.entryPoint, "ragged");
-  for (const m of messages) write(`<span class="warn">${m.type}</span> ${m.message}`);
-  write(`shader        ${src.split("\n").length} lines   ` +
-        `${src.match(/< \d+u\)/g)?.length ?? 0} synthesised bound checks`);
-
   const a = randomF32(M * K, 0x1234);
   const b = randomF32(K * N, 0x5678);
-  const runner = createRunner(ctx, pipeline, a, b, dims, "ragged", man.dispatch);
 
-  const stats = await measureInterleaved([runner], { warmup: 6, reps: 15 });
-  const st = stats.get("ragged");
-  if (st) {
-    write(`gpu           min ${st.minQ}q  med ${st.medianQ}q  spread ${st.spreadQ}q   ` +
-          `${f(2 * M * N * K / (st.minNs * 1e-9) / 1e9, 1)} GFLOP/s`);
+  // Both backends, interleaved so the comparison is not an ordering artefact.
+  const BACKENDS = [
+    { key: "mlir",   file: "./matmul-ragged.wgsl",        man, label: "via MLIR " },
+    { key: "direct", file: "./matmul-ragged-direct.wgsl", manFile: "./matmul-ragged-direct.json",
+      label: "direct   " },
+  ];
+  const runners = [];
+  for (const bk of BACKENDS) {
+    const m2 = bk.man ?? await (await fetch(bk.manFile)).json();
+    let src;
+    try { src = await (await fetch(bk.file)).text(); }
+    catch { write(`${bk.label}  <span class="warn">skipped</span>`); continue; }
+    const { pipeline, messages } = await compile(ctx.device, src, m2.entryPoint, bk.key);
+    for (const mm of messages) write(`<span class="warn">${mm.type}</span> ${mm.message}`);
+    write(`${bk.label}     ${String(src.split("\n").length).padStart(4)} lines   ` +
+          `${String(src.match(/< \d+u\)/g)?.length ?? 0).padStart(3)} synthesised bound checks`);
+    runners.push({ bk, r: createRunner(ctx, pipeline, a, b, dims, bk.key, m2.dispatch) });
   }
-  const got = await runner.result();
+  if (!runners.length) throw new Error("nothing compiled");
+
+  const stats = await measureInterleaved(runners.map((x) => x.r), { warmup: 6, reps: 20 });
+  write("");
+  for (const { bk } of runners) {
+    const st = stats.get(bk.key);
+    if (!st) continue;
+    write(`${bk.label}     min ${String(st.minQ).padStart(3)}q  med ${String(st.medianQ).padStart(3)}q  ` +
+          `spread ${String(st.spreadQ).padStart(2)}q   ` +
+          `${f(2 * M * N * K / (st.minNs * 1e-9) / 1e9, 1).padStart(7)} GFLOP/s`);
+  }
+  const outs = {};
+  for (const { bk, r } of runners) outs[bk.key] = await r.result();
+  const got = outs.mlir ?? outs.direct;
   const s = summarize(got);
   write(`output        min ${f(s.min)}  max ${f(s.max)}  mean ${f(s.mean)}  ` +
         `zeros ${s.zeros}  nans ${s.nans}`);
+  if (outs.mlir && outs.direct) {
+    const same = bitExactCount(outs.direct, outs.mlir);
+    write(`backends agree  bit-exact ${same} / ${got.length}` +
+          (same === got.length ? `  <span class="ok">IDENTICAL</span>`
+                               : `  <span class="bad">DIVERGENT</span>`));
+  }
   write("");
 
   // ---- the check -----------------------------------------------------------
@@ -144,7 +168,7 @@ async function main() {
       : `<span class="bad">FAIL</span>  ${bound.violations} elements exceed what f32 permits. ` +
         `That is a mask bug, not rounding.`);
   }
-  runner.destroy();
+  for (const { r } of runners) r.destroy();
 }
 </script>
 </body>

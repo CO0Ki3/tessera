@@ -138,6 +138,46 @@ if (!rag.ok) {
   }
 }
 
+// ---- 2c. the direct WGSL backend -------------------------------------------
+// Same IR, no MLIR. Checked here for the two properties that make the A/B in
+// docs/002 §5 meaningful: it must be valid WGSL, and it must make the same
+// masking decisions as the MLIR backend — otherwise the measurement compares
+// two different kernels rather than two emission paths.
+console.log("\ndirect WGSL backend");
+for (const [entry, label, wantMasks] of [
+  ["examples/matmul.kernel.ts", "aligned", false],
+  ["examples/matmul-ragged.kernel.ts", "ragged", true],
+]) {
+  let r;
+  try {
+    r = execFileSync("npx", ["tsx", "src/cli.ts", "build", entry, "-o", out, "--backend=wgsl"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (e) { bad(`${label}: ${(e.stdout ?? "") + (e.stderr ?? "")}`); continue; }
+
+  const name = label === "ragged" ? "matmul_relu_ragged" : "matmul_relu_f32";
+  const wgsl = readFileSync(join(out, `${name}.wgsl`), "utf8");
+  const bounds = (wgsl.match(/< \d+u\)/g) ?? []).length;
+
+  try {
+    execFileSync("naga", [join(out, `${name}.wgsl`)], { stdio: "pipe" });
+    ok(`${label}: valid WGSL (${wgsl.split("\n").length} lines, ${bounds} bound checks)`);
+  } catch (e) {
+    bad(`${label}: naga rejected the direct output\n${e.stdout ?? e.message}`);
+  }
+  if (wantMasks ? bounds > 0 : bounds === 0) {
+    ok(`${label}: masks exactly where raggedness is`);
+  } else {
+    bad(`${label}: ${bounds} bound checks, expected ${wantMasks ? ">0" : "0"}`);
+  }
+  // The entry point survives untouched: no naga in this path, so nothing renames it.
+  const man = JSON.parse(readFileSync(join(out, `${name}.json`), "utf8"));
+  if (man.backend === "wgsl" && man.entryPoint === man.name) {
+    ok(`${label}: entry point is spec.name — nothing in this path renames it`);
+  } else {
+    bad(`${label}: manifest backend=${man.backend} entryPoint=${man.entryPoint} name=${man.name}`);
+  }
+}
+
 // ---- 3. our own source ----------------------------------------------------
 console.log("\ncompiler source");
 try {

@@ -18,3 +18,5 @@ build/
 build-noopt/
 build-unroll/
 build-ragged/
+build-direct/
+build-direct-ragged/

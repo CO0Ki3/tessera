@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 
 import { compileToIR, FrontendError } from "./frontend.ts";
 import { emitMLIR } from "./emit-mlir.ts";
+import { emitWGSL } from "./emit-wgsl.ts";
 import type { KernelIR } from "./ir.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -87,6 +88,31 @@ function main(): void {
   const ir = compileToIR(entryPath);
   base = ir.name;
   report(ir);
+
+  // ---- direct WGSL backend ------------------------------------------------
+  // Same IR, no MLIR. See docs/002 §5 and src/emit-wgsl.ts.
+  if (args.includes("--backend=wgsl")) {
+    console.log(`\n── emit (direct WGSL, no MLIR) ────────────────────`);
+    const wgslDirect = emitWGSL(ir);
+    writeFileSync(at(".wgsl"), wgslDirect);
+    console.log(`  ${at(".wgsl")}  ${wgslDirect.split("\n").length} lines`);
+
+    const manifestDirect = {
+      name: ir.name, entryPoint: ir.name, backend: "wgsl", dtype: ir.dtype,
+      workgroup: ir.workgroup, dispatch: ir.dispatch, fragment: ir.fragment,
+      workgroupBytes: ir.workgroupBytes,
+      axes: Object.fromEntries([...ir.grid, ...ir.reduce].map((x) => [x.name, x.extent])),
+      bindings: ir.bindings.map((bd, i) => ({
+        name: bd.name, binding: i, group: 0, mode: bd.mode, elements: bd.elements, axes: bd.axes,
+      })),
+      maskedLoads: ir.maskedLoads, pad: ir.pad,
+    };
+    writeFileSync(at(".json"), JSON.stringify(manifestDirect, null, 2) + "\n");
+    console.log(`  manifest    ✓ ${at(".json")}`);
+    console.log(`\n  entry point: ${ir.name}   @workgroup_size(${ir.workgroup.join(", ")})`);
+    console.log(`  <span>no naga in this path, so the entry point is exactly spec.name`.replace(/<[^>]*>/g, ""));
+    return;
+  }
 
   // ---- MLIR --------------------------------------------------------------
   console.log(`\n── emit ───────────────────────────────────────────`);
@@ -161,6 +187,7 @@ function main(): void {
   const manifest = {
     name: ir.name,
     entryPoint,
+    backend: "mlir",
     dtype: ir.dtype,
     workgroup: ir.workgroup,
     dispatch: ir.dispatch,

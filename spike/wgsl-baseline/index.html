@@ -120,6 +120,11 @@ async function main() {
       dispatch: [768 / 64, 1024 / 64, 1] },
     { key: "mlir", file: "./matmul-mlir.wgsl", manifest: "./matmul-mlir.json",
       label: "tessera: TS \u2192 MLIR \u2192 WGSL" },
+    // The A/B that settles docs/002 \u00a74: same front end, same IR, same codegen
+    // decisions, no MLIR. If this reaches the hand-written kernel's 7 quanta the
+    // tax is the translation chain; if it also lands at 11 the tax is ours.
+    { key: "direct", file: "./matmul-direct.wgsl", manifest: "./matmul-direct.json",
+      label: "tessera: TS \u2192 WGSL (no MLIR)" },
     // Two-sided probe of the storage access mode (node make-probes.mjs).
     // A1 makes the fast kernel worse; A2 makes the slow kernel better. If the
     // gap is the access mode, they move toward each other and meet.
@@ -210,9 +215,30 @@ async function main() {
   write("── verdict ────────────────────────────────────────");
   const gap = q("hand") && q("mlir") ? q("mlir") / q("hand") : null;
   if (gap !== null) {
-    write(`tessera vs hand-written        ${f(gap, 2)}x` +
+    write(`tessera (MLIR) vs hand-written    ${f(gap, 2)}x` +
           (Math.abs(q("mlir") - q("hand")) <= 1
             ? `  <span class="dim">(within one quantum — indistinguishable)</span>` : ""));
+  }
+  if (q("direct") && q("hand")) {
+    const d = q("direct") / q("hand");
+    write(`tessera (direct) vs hand-written  ${f(d, 2)}x` +
+          (Math.abs(q("direct") - q("hand")) <= 1
+            ? `  <span class="dim">(within one quantum — indistinguishable)</span>` : ""));
+    write("");
+    // The verdict table from docs/002 §5, applied.
+    if (Math.abs(q("direct") - q("hand")) <= 1) {
+      write(`<span class="ok">The tax is the MLIR chain.</span>  Same front end, same IR, same`);
+      write(`codegen decisions — only the emission path differs, and the direct printer`);
+      write(`reaches the hand-written kernel. The 80% invariant is met by this backend.`);
+    } else if (q("direct") >= q("mlir") - 1) {
+      write(`<span class="warn">The tax is ours, not MLIR's.</span>  The direct printer lands with`);
+      write(`the MLIR path, so the cost is in the IR or the codegen decisions both share.`);
+      write(`MLIR is exonerated; optimise inside it.`);
+    } else {
+      write(`<span class="warn">Partial.</span>  The direct printer sits between the two: some of the`);
+      write(`gap is the chain and some is ours. Both halves are now bounded.`);
+    }
+    write("");
   }
   if (q("mlirNoOpt") && q("mlir")) {
     const d = q("mlirNoOpt") - q("mlir");
@@ -244,6 +270,12 @@ async function main() {
   if (results.hand && results.mlir) {
     const same = bitExactCount(results.mlir, results.hand);
     write(`tessera vs hand-written   bit-exact ${same} / ${results.hand.length}` +
+          (same === results.hand.length
+            ? `  <span class="ok">IDENTICAL</span>` : `  <span class="bad">DIVERGENT</span>`));
+  }
+  if (results.direct && results.hand) {
+    const same = bitExactCount(results.direct, results.hand);
+    write(`direct WGSL vs hand-written   bit-exact ${same} / ${results.hand.length}` +
           (same === results.hand.length
             ? `  <span class="ok">IDENTICAL</span>` : `  <span class="bad">DIVERGENT</span>`));
   }
