@@ -265,6 +265,7 @@ async function main() {
     const g = 2 * M * N * K / (st.minNs * 1e-9) / 1e9;
     write(`  ${v.label.padEnd(34)}  ${String(st.minQ).padStart(5)} ${String(st.medianQ).padStart(5)} ` +
           `${String(st.maxQ).padStart(5)}   ${String(st.spreadQ).padStart(6)}   ${f(g, 1).padStart(7)}` +
+          (st.belowResolution ? `  <span class="warn">below resolution</span>` : "") +
           (st.spreadQ > st.minQ * 0.5 ? `  <span class="warn">noisy</span>` : ""));
   }
   write("");

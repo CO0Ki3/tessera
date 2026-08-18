@@ -116,8 +116,15 @@ async function main() {
     // than the matmul's three, and their output binding is at index 1 rather than
     // 2, so this is the case that would catch an adapter which happened to work
     // only for the shape it was written against.
+    // These kernels are FASTER THAN THE INSTRUMENT. Chrome quantises timestamps
+    // to 65.536 us and a single softmax dispatch lands at 0-1 of those, so
+    // "min 0q" was not a fast kernel, it was an unmeasured one — and docs/002 2a
+    // says plainly that a one-quantum difference is not a result. Bracketing 64
+    // dispatches with one pair of timestamps puts the total around 30-60 quanta
+    // and hands back 1/64 of a quantum of resolution.
+    const BATCH = 64;
     const built = await makeRunner(ctx, {
-      source: src, manifest: man, inputs: [x], label: K.key,
+      source: src, manifest: man, inputs: [x], label: K.key, batch: BATCH,
     });
     for (const m of built.messages) write(`<span class="warn">${m.type}</span> ${m.message}`);
     const runners = [built.runner];
@@ -126,16 +133,32 @@ async function main() {
     if (TYPEGPU.available) {
       tg = (await makeRunner(ctx, {
         runtime: "typegpu", source: src, manifest: man, inputs: [x], label: `${K.key}:tg`,
+        batch: BATCH,
       })).runner;
       runners.push(tg);
     }
 
     const stats = await measureInterleaved(runners, { warmup: 6, reps: 12 });
     const st = stats.get(K.key), sg = tg ? stats.get(`${K.key}:tg`) : null;
+    // Quanta are fractional now, so print them as such rather than rounding a
+    // real measurement back down onto the grid it was taken off.
+    const qq = (v) => v.toFixed(2);
     if (st) {
-      write(`gpu       min ${st.minQ}q  med ${st.medianQ}q  spread ${st.spreadQ}q` +
-            (sg ? `   <span class="dim">TypeGPU resources: min ${sg.minQ}q  med ${sg.medianQ}q</span>`
-                : TYPEGPU.available ? "" : `   <span class="dim">(TypeGPU: ${TYPEGPU.reason})</span>`));
+      write(`gpu       min ${qq(st.minQ)}q  med ${qq(st.medianQ)}q  spread ${qq(st.spreadQ)}q` +
+            `   <span class="dim">(x${st.batch} per timed pass)</span>`);
+      if (st.belowResolution) {
+        write(`          <span class="warn">below the instrument's resolution</span> — raise BATCH; ` +
+              `this row is not a measurement`);
+      }
+      if (sg) {
+        const d = Math.abs(sg.minQ - st.minQ);
+        write(`typegpu   min ${qq(sg.minQ)}q  med ${qq(sg.medianQ)}q` +
+              (d * st.batch <= 1
+                ? `   <span class="dim">— within one raw quantum of the hand-rolled path</span>`
+                : `   <span class="warn">— ${(sg.minQ / st.minQ).toFixed(2)}x, outside the instrument's floor</span>`));
+      } else if (!TYPEGPU.available) {
+        write(`typegpu   <span class="dim">${TYPEGPU.reason}</span>`);
+      }
     }
 
     const got = await built.runner.result();

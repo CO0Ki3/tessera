@@ -98,6 +98,25 @@ the reading that produced the retracted 1.5× claim in §2.
 The comparisons that survive this are the ones that were never close: the MLIR
 chain at 11q against 6–7q, the naga round-trip at 13q, unrolling at 15q.
 
+### And some kernels are below it entirely
+
+The rowwise kernels measured `min 0q` (layernorm) and `min 1q` (softmax). That is
+not a fast kernel; it is an **unmeasured** one — the whole timed region fits
+inside a single quantum, so nothing separates it from zero or from twice itself.
+Quoting it as a throughput number would be quoting the instrument's rounding.
+
+The fix is to raise the amount of work inside one pair of timestamps rather than
+to report the number more carefully. `createDispatcher` takes a `batch`: it
+brackets N dispatches with one pair of timestamps and divides, which lifts the
+total well above the floor and returns 1/N of a quantum of resolution. The
+rowwise page uses 64. What that measures is steady-state kernel cost with
+per-dispatch CPU overhead amortised away, which is the right quantity for
+comparing two backends or two resource layers on the same shader anyway —
+allocation happens once, outside the pass, and was never in the timed region.
+
+`measureInterleaved` now returns `belowResolution` per row, and both pages print
+a warning rather than a plausible-looking number when it is set.
+
 ## 3. What has been ruled out
 
 Three hypotheses, each probed, all refuted. Recorded so nobody re-runs them.

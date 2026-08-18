@@ -61,17 +61,17 @@ export async function typegpuStatus() {
  * the compiler's decisions. Both host bugs this project has had came from a page
  * recomputing one of them.
  */
-export async function makeRunner(ctx, { runtime = "raw", source, manifest, inputs, label }) {
+export async function makeRunner(ctx, { runtime = "raw", source, manifest, inputs, label, batch = 1 }) {
   if (runtime === "typegpu") {
     if (!await loadAdapter()) return null;
     // The adapter compiles and allocates together, because with TypeGPU the bind
     // group layout comes from the manifest rather than from the pipeline
     // (`getBindGroupLayout(0)`). That inversion is the point of it: the layout is
     // derived from what the compiler wrote down, not read back out of the shader.
-    return { runner: await adapter(ctx, source, manifest, inputs, label), messages: [] };
+    return { runner: await adapter(ctx, source, manifest, inputs, label, { batch }), messages: [] };
   }
   const { pipeline, messages } = await compile(ctx.device, source, manifest.entryPoint, label);
-  return { runner: createRunner(ctx, pipeline, inputs, manifest, label), messages };
+  return { runner: createRunner(ctx, pipeline, inputs, manifest, label, { batch }), messages };
 }
 
 /**

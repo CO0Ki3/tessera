@@ -249,6 +249,22 @@ written against:
 `check-typegpu-layout.mjs` covers the same four statically (manifest ↔ emitted
 WGSL ↔ TypeGPU layout: index, group, element type, access mode, name).
 
+Measured:
+
+```
+matmul      raw 7q    TypeGPU 6q     bit-exact 786432 / 786432   IDENTICAL
+ragged      raw 7q    TypeGPU 7q     bit-exact 750000 / 750000   IDENTICAL
+softmax                              bit-exact 768000 / 768000   IDENTICAL
+layernorm                            bit-exact 768000 / 768000   IDENTICAL
+```
+
+**The bit-identity is the result; the timings on the rowwise kernels were not.**
+softmax and layernorm first measured `min 1q` and `min 0q`, which is not a fast
+kernel but an unmeasured one — the whole timed region fit inside one quantum. The
+page now batches 64 dispatches per timed pass and prints fractional quanta, and
+`measureInterleaved` returns `belowResolution` so a row like that says so instead
+of looking like data. See [`docs/002`](002-performance.md) §2a.
+
 ### One constructor, because three would rot
 
 The branch lives in `runners.js`, not in each page. Three copies of

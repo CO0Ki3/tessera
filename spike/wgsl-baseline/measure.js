@@ -40,7 +40,7 @@ export const QUANTUM_NS = 65536;
  * runner supplies only the two things it genuinely owns differently: a pipeline
  * and a bind group.
  */
-export function createDispatcher(ctx, { pipeline, bindGroup, dispatch, label }) {
+export function createDispatcher(ctx, { pipeline, bindGroup, dispatch, label, batch = 1 }) {
   const { device, hasTimestamps } = ctx;
   if (!Array.isArray(dispatch) || dispatch.length !== 3 || !dispatch.every(Number.isInteger)) {
     throw new Error(`${label}: manifest.dispatch must be three integers, got ${JSON.stringify(dispatch)}`);
@@ -57,7 +57,22 @@ export function createDispatcher(ctx, { pipeline, bindGroup, dispatch, label }) 
     });
   }
 
-  /** One timed dispatch. Returns GPU nanoseconds, or null without timestamps. */
+  /**
+   * One timed sample. Returns GPU nanoseconds PER DISPATCH, or null without
+   * timestamps.
+   *
+   * `batch` exists because some kernels are faster than the instrument. Chrome
+   * quantises timestamp-query results to 65.536 us, and the rowwise kernels land
+   * at 0-1 of those: `min 0q` is not "immeasurably fast", it is "not measured".
+   * Bracketing N dispatches with one pair of timestamps and dividing lifts the
+   * total well above the floor and gives back a real number with 1/N of a
+   * quantum of resolution.
+   *
+   * What this measures is steady-state kernel cost with per-dispatch CPU
+   * overhead amortised away. For comparing two resource layers or two backends
+   * on the same shader that is the right quantity anyway — allocation happens
+   * once, outside the pass, and is not in the timed region at all.
+   */
   async function once() {
     const encoder = device.createCommandEncoder();
     const pass = encoder.beginComputePass(
@@ -66,7 +81,10 @@ export function createDispatcher(ctx, { pipeline, bindGroup, dispatch, label }) 
         : {});
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, bindGroup);
-    pass.dispatchWorkgroups(dispatch[0], dispatch[1], dispatch[2]);
+    // Commands within a compute pass execute in order, so these do not overlap.
+    // Every dispatch writes the same output from the same input, so repeating it
+    // is idempotent and the result is still checkable afterwards.
+    for (let i = 0; i < batch; i++) pass.dispatchWorkgroups(dispatch[0], dispatch[1], dispatch[2]);
     pass.end();
     if (hasTimestamps) {
       encoder.resolveQuerySet(querySet, 0, 2, queryResolve, 0);
@@ -79,7 +97,7 @@ export function createDispatcher(ctx, { pipeline, bindGroup, dispatch, label }) 
     await queryRead.mapAsync(GPUMapMode.READ);
     const ts = new BigInt64Array(queryRead.getMappedRange().slice(0));
     queryRead.unmap();
-    return Number(ts[1] - ts[0]);
+    return Number(ts[1] - ts[0]) / batch;
   }
 
   function destroy() {
@@ -87,7 +105,7 @@ export function createDispatcher(ctx, { pipeline, bindGroup, dispatch, label }) 
     querySet?.destroy();
   }
 
-  return { once, destroy };
+  return { once, destroy, batch };
 }
 
 /**
@@ -107,7 +125,7 @@ export function createDispatcher(ctx, { pipeline, bindGroup, dispatch, label }) 
  *
  * The rule: anything the compiler already decided is read, never re-derived.
  */
-export function createRunner(ctx, pipeline, inputs, manifest, label) {
+export function createRunner(ctx, pipeline, inputs, manifest, label, { batch = 1 } = {}) {
   const { device, hasTimestamps } = ctx;
   const { dispatch, bindings } = manifest;
 
@@ -144,7 +162,7 @@ export function createRunner(ctx, pipeline, inputs, manifest, label) {
   });
 
   const { once, destroy: destroyTimer } =
-    createDispatcher(ctx, { pipeline, bindGroup, dispatch, label });
+    createDispatcher(ctx, { pipeline, bindGroup, dispatch, label, batch });
 
   /** Read the output once, for the correctness check. Not part of timing. */
   async function result() {
@@ -162,7 +180,7 @@ export function createRunner(ctx, pipeline, inputs, manifest, label) {
     destroyTimer();
   }
 
-  return { once, result, destroy, dispatch, label };
+  return { once, result, destroy, dispatch, label, batch };
 }
 
 /**
@@ -185,6 +203,7 @@ export async function measureInterleaved(runners, { warmup = 8, reps = 25, onPro
     onProgress?.(warmup + i + 1, warmup + reps);
   }
 
+  const batches = new Map(runners.map((r) => [r.label, r.batch ?? 1]));
   const stats = new Map();
   for (const [label, ns] of samples) {
     if (!ns.length) { stats.set(label, null); continue; }
@@ -201,7 +220,16 @@ export async function measureInterleaved(runners, { warmup = 8, reps = 25, onPro
       // How much of the distribution is noise. A spread of many quanta means
       // the machine, not the kernel, is what varied.
       spreadQ: (max - min) / QUANTUM_NS,
-      allQuantised: sorted.every((x) => x % QUANTUM_NS === 0),
+      batch: batches.get(label),
+      // The raw reading is what is quantised; a batched sample has been divided.
+      allQuantised: sorted.every((x) => (x * batches.get(label)) % QUANTUM_NS === 0),
+      /**
+       * True when the whole timed region fits inside one quantum, i.e. the
+       * reading is 0q or 1q and nothing separates it from either neighbour.
+       * Such a row is not a measurement and must not be quoted as one — see
+       * docs/002 2a. Raise `batch` until this is false.
+       */
+      belowResolution: min * batches.get(label) <= QUANTUM_NS,
     });
   }
   return stats;

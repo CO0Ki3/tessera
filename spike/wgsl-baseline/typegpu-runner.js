@@ -39,7 +39,7 @@ import tgpu from "./vendor/typegpu/index.js";
 import * as d from "./vendor/typegpu/data/index.js";
 import { createDispatcher } from "./measure.js";
 
-export async function createTypeGPURunner(ctx, wgsl, manifest, inputs, label) {
+export async function createTypeGPURunner(ctx, wgsl, manifest, inputs, label, { batch = 1 } = {}) {
   const { device } = ctx;
   const { dispatch, bindings } = manifest;
   const root = tgpu.initFromDevice({ device });
@@ -86,7 +86,7 @@ export async function createTypeGPURunner(ctx, wgsl, manifest, inputs, label) {
   });
 
   const { once, destroy: destroyTimer } = createDispatcher(ctx, {
-    pipeline, bindGroup: root.unwrap(root.createBindGroup(layout, bufs)), dispatch, label,
+    pipeline, bindGroup: root.unwrap(root.createBindGroup(layout, bufs)), dispatch, label, batch,
   });
 
   /**
@@ -105,5 +105,5 @@ export async function createTypeGPURunner(ctx, wgsl, manifest, inputs, label) {
     root.destroy();          // owns every buffer it created
   }
 
-  return { once, result, destroy, dispatch, label };
+  return { once, result, destroy, dispatch, label, batch };
 }
