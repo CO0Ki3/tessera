@@ -34,7 +34,24 @@ export const QUANTUM_NS = 65536;
  * allocation and no readback. Buffers are shared across repetitions on purpose:
  * we are timing the kernel, not the allocator.
  */
-export function createRunner(ctx, pipeline, a, b, { M, N, K }, label) {
+/**
+ * `dispatch` MUST come from the compiler's manifest, not be recomputed here.
+ *
+ * This function previously derived it as [N/64, M/64, 1]. That is neither
+ * integer division nor a ceiling, so for 750x1000 it asked for 11.71875 x 15.625
+ * workgroups and the last block in each dimension was never dispatched — every
+ * tail element stayed zero, and the ragged kernel looked like it had a mask bug.
+ * The masks were correct; the host ignored a manifest that said [12, 16, 1] and
+ * recomputed it wrongly. Same mistake as hardcoding the entry point, twice over.
+ *
+ * The rule: anything the compiler already decided is read, never re-derived.
+ */
+export function createRunner(ctx, pipeline, a, b, { M, N, K }, label, dispatch) {
+  if (!Array.isArray(dispatch) || dispatch.length !== 3 || !dispatch.every(Number.isInteger)) {
+    throw new Error(
+      `${label}: createRunner needs an integer [x,y,z] dispatch from the manifest, got ` +
+      JSON.stringify(dispatch));
+  }
   const { device, hasTimestamps } = ctx;
   const bytesC = M * N * 4;
 
@@ -73,8 +90,6 @@ export function createRunner(ctx, pipeline, a, b, { M, N, K }, label) {
       size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     });
   }
-
-  const dispatch = [N / 64, M / 64, 1];
 
   /** One timed dispatch. Returns GPU nanoseconds, or null without timestamps. */
   async function once() {

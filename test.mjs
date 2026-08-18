@@ -120,6 +120,16 @@ if (!rag.ok) {
     bad(`ragged has ${bounds(rw)} bound checks, aligned has ${bounds(aw)} — expected >0 and 0`);
   }
   const rm = JSON.parse(readFileSync(join(out, "matmul_relu_ragged.json"), "utf8"));
+  // The dispatch must CEIL, or the tail blocks are never launched. A host that
+  // recomputed this as N/64 asked for 11.71875 workgroups and silently dropped
+  // the last block in each dimension — the ragged kernel then looked like it had
+  // a mask bug when the masks were correct.
+  const want = [Math.ceil(750 / 64), Math.ceil(1000 / 64), 1];
+  if (JSON.stringify(rm.dispatch) === JSON.stringify(want)) {
+    ok(`dispatch ceils to [${want.join(", ")}] — tail blocks are launched`);
+  } else {
+    bad(`dispatch is ${JSON.stringify(rm.dispatch)}, expected ${JSON.stringify(want)}`);
+  }
   const expected = ["a:m", "a:k", "b:k", "b:n", "c:m", "c:n"];
   if (JSON.stringify(rm.maskedLoads) === JSON.stringify(expected) && rm.pad === 0) {
     ok(`manifest reports the masked pairs: ${rm.maskedLoads.join(" ")}`);

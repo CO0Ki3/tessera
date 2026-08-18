@@ -97,7 +97,7 @@ async function main() {
 
   const a = randomF32(M * K, 0x1234);
   const b = randomF32(K * N, 0x5678);
-  const runner = createRunner(ctx, pipeline, a, b, dims, "ragged");
+  const runner = createRunner(ctx, pipeline, a, b, dims, "ragged", man.dispatch);
 
   const stats = await measureInterleaved([runner], { warmup: 6, reps: 15 });
   const st = stats.get("ragged");

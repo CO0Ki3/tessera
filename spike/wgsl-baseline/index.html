@@ -116,14 +116,15 @@ async function main() {
   // a manifest, because the WGSL entry point is not necessarily spec.name \u2014 naga
   // renames anything ending in a reserved word (matmul_relu_f32 -> ..._).
   const VARIANTS = [
-    { key: "hand", file: "./matmul.wgsl", entry: "main", label: "hand-written" },
+    { key: "hand", file: "./matmul.wgsl", entry: "main", label: "hand-written",
+      dispatch: [768 / 64, 1024 / 64, 1] },
     { key: "mlir", file: "./matmul-mlir.wgsl", manifest: "./matmul-mlir.json",
       label: "tessera: TS \u2192 MLIR \u2192 WGSL" },
     // Two-sided probe of the storage access mode (node make-probes.mjs).
     // A1 makes the fast kernel worse; A2 makes the slow kernel better. If the
     // gap is the access mode, they move toward each other and meet.
     { key: "handRW", file: "./probe-hand-rw.wgsl", entry: "main", probe: true,
-      label: "probe A1: hand, inputs read_write" },
+      label: "probe A1: hand, inputs read_write", dispatch: [768 / 64, 1024 / 64, 1] },
     { key: "mlirRO", file: "./probe-tessera-ro.wgsl", manifest: "./matmul-mlir.json",
       probe: true, label: "probe A2: tessera, inputs read" },
     // Probe B: the same tessera kernel built with --no-opt. The default build now
@@ -158,10 +159,13 @@ async function main() {
     }
 
     let entry = v.entry;
+    let dispatch = v.dispatch ?? null;
     if (v.manifest) {
       const mres = await fetch(v.manifest);
       if (!mres.ok) { write(`  ${v.label.padEnd(34)} <span class="warn">no manifest</span>`); continue; }
-      entry = (await mres.json()).entryPoint;
+      const man = await mres.json();
+      entry = man.entryPoint;
+      dispatch = man.dispatch;
     }
 
     const t0 = performance.now();
@@ -169,7 +173,7 @@ async function main() {
     for (const m of messages) write(`<span class="warn">${m.type} ${m.line}:${m.col}</span> ${m.message}`);
     write(`  ${v.label.padEnd(34)} ${String(source.split("\n").length).padStart(4)} lines   ` +
           `pipeline ${f(performance.now() - t0, 1).padStart(7)} ms`);
-    runners.push({ v, r: createRunner(ctx, pipeline, a, b, DIMS, v.key) });
+    runners.push({ v, r: createRunner(ctx, pipeline, a, b, DIMS, v.key, dispatch) });
   }
   if (!runners.length) throw new Error("nothing compiled");
   write("");
