@@ -177,6 +177,45 @@ before there is a real kernel with masks to measure.
   same finite search space.
 - **Subgroups.** Chrome-only today. Not portable, so not a v0 lever.
 
+## 6a. RESOLVED — the cost is naga's reconstruction, not MLIR
+
+The mechanism §5 left open is settled, and it did not need the MSL dump. The direct
+WGSL was pushed through naga and back — `wgsl → spv → wgsl` — with MLIR entirely out
+of the picture:
+
+```
+tessera direct                    8q
+probe D: direct, naga round-trip  13q      1.63x
+```
+
+The round-trip acquires naga's `loop {} continuing {}` form and **not** the 144 phi
+variables or the 4 bitcasts that only the MLIR path has, so it separates the two
+candidates cleanly. It reproduces the whole gap on its own. **The loop form is the
+cost**, and MLIR's contribution is only that going through SPIR-V means coming back
+out through naga.
+
+One confound was removed before measuring: naga inserts a workgroup zero-init that
+neither other kernel pays (`if (local_invocation_index == 0u) { … }` plus a barrier).
+Left in, the probe would have measured that instead. `make-probes.mjs` strips it and
+throws if it cannot find it, so a change in naga's output fails loudly rather than
+silently measuring the wrong thing.
+
+## 6b. The unified emitter cost two quanta, and that is the trade
+
+Replacing two hand-shaped emitters with one contraction-driven emitter moved the
+direct backend from **6q to 8q** — about 25%. Against the hand-written kernel:
+
+```
+hand-written                7q
+tessera direct (unified)    8q     1.14x, within one quantum
+```
+
+The 80% invariant is still met at 87.5%, and the correctness is unchanged
+(786432/786432 bit-identical). But the regression is real and should be named rather
+than absorbed: one emitter that derives its schedule costs a little against two that
+were shaped by hand for their kernel. Whether that is worth reclaiming is a question
+for when there is a reason to tune, and the measurement layer is already there.
+
 ## 7. Method note
 
 Three WGSL-level hypotheses produced three refutations. That is the signal to

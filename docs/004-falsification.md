@@ -536,3 +536,31 @@ So the state, stated precisely:
 
 Three of four are one. The fourth is two because the memory schedules genuinely differ,
 and the next honest step for it is named above rather than left as "more work".
+
+
+## R11. The unified emitter, verified
+
+All four kernels through one contraction-driven emitter, on hardware:
+
+```
+aligned matmul    786432/786432 bit-identical to the hand-written kernel
+ragged matmul     750000/750000 bit-exact, tails included
+softmax           rows sum to 1; 6 ULP against the oracle
+layernorm         mean 0 variance 1; 3.2 ULP at scale against the oracle
+```
+
+Sizes: matmul 113 → 107 lines, ragged 145 → 139, softmax 477 → 163, layernorm
+390 → 160. softmax's bound checks fell 64 → 16 because reads are now once per
+accumulate slice rather than once per fragment cell — the old emitter re-read the
+same row four times per block, which the unification removed without anyone
+aiming at it.
+
+**Cost: two quanta.** The direct backend went 6q → 8q, still 87.5% of the
+hand-written kernel and still inside the 80% invariant. One emitter that derives
+its schedule is slightly slower than two shaped by hand. That is the trade, and it
+is worth stating plainly since the whole argument of this document is that the
+derivation generalises — it generalises, and it is not free.
+
+**So R10 was wrong twice over.** It said the split was honest and that unifying it
+needed a contraction abstraction rather than a refactor. The abstraction was real;
+the split was not.
