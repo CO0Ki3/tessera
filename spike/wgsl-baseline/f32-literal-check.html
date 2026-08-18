@@ -16,7 +16,11 @@
   <code>3.4028235e38</code>, the decimal people write when they mean the f32
   maximum.
 </p>
-<p class="dim">Open this in both browsers. See <code>spike/upstream/naga-f32-literal-range.md</code>.</p>
+<p class="dim">
+  Row 2 is the one that matters: it is not a spelling anyone chose, it is what
+  naga's <code>wgsl-out</code> writes when the source said <code>0x1.fffffep+127</code>.
+  Open this in both browsers. See <code>spike/upstream/naga-f32-literal-range.md</code>.
+</p>
 <table id="t"><tr><th>literal<th>expect<th>this browser</table>
 <pre id="ua"></pre>
 <script type="module">
@@ -24,7 +28,12 @@ const MAX  = "3.4028234663852886e38";   // f32::MAX exactly
 const MID  = "3.4028235677973366e38";   // midpoint between MAX and 2^128
 const CASES = [
   [MAX,               "valid",   "the exact maximum"],
-  ["3.4028235e38",    "?",       "above MAX, rounds down to MAX — the disputed band"],
+  // This is not a hypothetical spelling. It is what naga's own wgsl-out writes
+  // when the input said 0x1.fffffep+127, i.e. exactly f32::MAX. If this row is
+  // rejected, naga emits WGSL that this browser will not compile.
+  ["340282350000000000000000000000000000000f",
+                      "?",       "what naga's wgsl-out emits for f32::MAX"],
+  ["3.4028235e38",    "?",       "the same value in exponent form — the disputed band"],
   ["3.402823567e38",  "?",       "still just below the midpoint"],
   [MID,               "invalid", "the midpoint — rounds to infinity"],
   ["1e39",            "invalid", "far out of range"],
