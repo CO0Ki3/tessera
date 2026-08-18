@@ -56,12 +56,20 @@ import { createRunner, measureInterleaved, QUANTUM_NS } from "./measure.js";
 // TypeGPU is loaded dynamically and its absence is not an error. tessera should
 // not hard-require a pre-1.0 runtime to run its own kernels, so the adapter is a
 // peer of the raw runner rather than a replacement, and this page still measures
-// everything else if `npm run vendor` was never run.
-let createTypeGPURunner = null;
+// everything else without it.
+//
+// The REASON is kept and printed. An earlier version of this reported every
+// failure as "run `npm run vendor`", which was a lie the one time it mattered:
+// TypeGPU had been vendored, and the real error was that its published ESM reads
+// `process.env.NODE_ENV` at module top level and therefore cannot be loaded by a
+// browser without a bundler. A page that guesses at why it skipped something
+// costs more than one that says it does not know.
+let createTypeGPURunner = null, typegpuError = null;
 try {
   ({ createTypeGPURunner } = await import("./typegpu-runner.js"));
 } catch (e) {
-  console.warn("typegpu adapter unavailable:", e.message);
+  typegpuError = e;
+  console.warn("typegpu adapter unavailable:", e);
 }
 import {
   DIMS, randomF32, matmulReluF32, allClose, summarize,
@@ -211,7 +219,9 @@ async function main() {
     let r;
     if (v.runtime === "typegpu") {
       if (!createTypeGPURunner) {
-        write(`  ${v.label.padEnd(34)} <span class="warn">skipped</span> (run \`npm run vendor\`)`);
+        write(`  ${v.label.padEnd(34)} <span class="warn">skipped</span> — ` +
+              (typegpuError ? `${typegpuError.name}: ${typegpuError.message}` : "adapter not loaded"));
+        write(`  <span class="dim">${typegpuError ? "if this is a 404, run `npm run vendor`" : ""}</span>`);
         continue;
       }
       // The adapter compiles and allocates in one call, because with TypeGPU the

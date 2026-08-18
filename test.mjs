@@ -261,6 +261,14 @@ console.log("\nharness artifacts");
 // so checked here. Skips itself if typegpu was never vendored.
 console.log("\ntypegpu adapter");
 try {
+  const out = execFileSync("node", ["spike/wgsl-baseline/vendor.mjs", "--check"], { stdio: "pipe" })
+    .toString().trim();
+  if (/not vendored/.test(out)) console.log(`  - ${out.trim()}`);
+  else ok(out);
+} catch (e) {
+  bad(`the vendored typegpu would not load in a browser:\n${e.stdout?.toString() ?? e.message}`);
+}
+try {
   const out = execFileSync("node", ["spike/wgsl-baseline/check-typegpu-layout.mjs"], { stdio: "pipe" })
     .toString().trim();
   const last = out.split("\n").filter(Boolean).pop() ?? "";

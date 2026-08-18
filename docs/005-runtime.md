@@ -1,8 +1,9 @@
 # 005 — The runtime: what TypeGPU absorbs, and what it structurally cannot
 
-Status: **adapter built and statically verified; the timing number is pending a
-browser run.** Code: `spike/wgsl-baseline/typegpu-runner.js`,
-`spike/wgsl-baseline/check-typegpu-layout.mjs`.
+Status: **adapter built and statically verified; the first browser run found an
+upstream blocker, now worked around; the timing number is pending a re-run.**
+Code: `spike/wgsl-baseline/typegpu-runner.js`, `vendor.mjs`,
+`check-typegpu-layout.mjs`.
 
 ## 1. tessera has no host-side story, and that is where its bugs came from
 
@@ -111,14 +112,64 @@ So the adapter is a **peer** of the raw runner, not a replacement:
 `npm run vendor` was never run the page reports `skipped` and measures everything
 else. `check-typegpu-layout.mjs` skips itself the same way.
 
-TypeGPU ships as fully self-contained relative-path ESM (166 modules, zero bare
-specifiers), so `npm run vendor` is a plain `cp -R` into the harness directory —
-no bundler and no import map. The harness is served by `python3 -m http.server`
-rooted at `spike/wgsl-baseline/`, which cannot see the repo root's
-`node_modules`; vendoring is what makes it reachable, and the directory is
-gitignored.
+The harness is served by `python3 -m http.server` rooted at
+`spike/wgsl-baseline/`, which cannot see the repo root's `node_modules`, so
+TypeGPU is vendored into the harness directory (gitignored). See §6.
 
-## 6. Measuring it honestly
+## 6. Vendoring found an upstream blocker
+
+The plan was `cp -R node_modules/typegpu` and nothing else: TypeGPU's ESM uses
+relative specifiers throughout (166 modules reachable from the adapter, zero bare
+imports), so it should serve as-is with no bundler and no import map.
+
+It does not. The first browser run reported the variant as skipped, and the reason
+was that **TypeGPU's published ESM cannot be loaded by a browser at all**.
+`shared/env.js` evaluates, at module top level:
+
+```js
+export const DEV = process.env.NODE_ENV === 'development';
+export const TEST = process.env.NODE_ENV === 'test';
+```
+
+`env.js` is imported by `errors.js`, so it is in everything. In a browser
+`process` is undefined and the entire graph fails with a `ReferenceError`. The
+file's own comment states the assumption — *"pretty much every bundler replaces
+the expression below"* — which is true of the documented setups and means the
+package as published is not loadable by the runtime it targets. `package.json`
+advertises `"exports": { ".": "./index.js" }` with no `browser` condition and no
+bundled build.
+
+**It is invisible from Node.** `await import("typegpu")` in a Node script
+succeeds, because Node has `process`. A CI job that only imports the package
+passes while the browser path is broken. That is why this cost a browser run to
+find rather than being caught by the module-graph walk that ran first — the walk
+proved every file exists, which was true and not the problem.
+
+So `vendor.mjs` does the substitution a bundler would (`DEV = false`,
+`TEST = false`), and then refuses to trust itself:
+
+- it rescans the whole vendored tree for any remaining `process.` / `require(` /
+  `node:` / `__dirname` reference, so a TypeGPU upgrade that reintroduces one
+  fails here rather than in a browser console;
+- it walks the module graph the browser will fetch and fails on a missing file;
+- `vendor.mjs --check` runs both against an existing tree, and is in `npm test`.
+
+Both guards were falsified before being trusted — restoring the `process.env`
+line and deleting a reachable leaf each produce a non-zero exit.
+
+Written up for upstream in
+[`spike/upstream/typegpu-process-env-esm.md`](../spike/upstream/typegpu-process-env-esm.md);
+the one-line fix is to read `typeof process !== 'undefined' ? process.env : {}`,
+which still folds under every bundler.
+
+### The harness was also lying about why
+
+The skip message said `run npm run vendor` for *any* load failure — and TypeGPU
+*had* been vendored. A page that guesses at why it skipped something costs more
+than one that says it does not know, so the error is now kept and printed. This
+was the actual reason the diagnosis took a round trip.
+
+## 7. Measuring it honestly
 
 `once()` is **not** reimplemented in the adapter. Both runners call
 `createDispatcher` from `measure.js`, which owns the query set and the compute
@@ -132,7 +183,7 @@ The expected result is *no difference* — a resource layer that costs quanta
 would be a finding worth chasing before adopting it. The number goes here once
 the harness has been run.
 
-## 7. What this does not settle
+## 8. What this does not settle
 
 Only the compute path is covered. Textures, samplers, vertex layouts, multiple
 bind groups and uniform buffers are all untouched, because tessera emits none of

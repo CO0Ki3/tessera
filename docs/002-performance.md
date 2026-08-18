@@ -1,8 +1,9 @@
 # 002 — Performance: the invariant, what is ruled out, and the plan
 
 Status: **invariant met.** The direct backend is at parity with the hand-written
-kernel — 6 quanta against 7, inside one quantum, so "indistinguishable" rather than
-"faster". The MLIR path remains at 64% and is no longer the default.
+kernel — 6 quanta against 6 in the most recent run, and never more than one quantum
+apart, so "indistinguishable" is the honest reading. The MLIR path remains at 55%
+and is no longer the default.
 Measurement: `spike/wgsl-baseline/measure.js`
 
 ## 1. Why this is not optional
@@ -201,21 +202,42 @@ Left in, the probe would have measured that instead. `make-probes.mjs` strips it
 throws if it cannot find it, so a change in naga's output fails loudly rather than
 silently measuring the wrong thing.
 
-## 6b. The unified emitter cost two quanta, and that is the trade
+## 6b. The unified emitter cost two quanta, and then it did not
 
-Replacing two hand-shaped emitters with one contraction-driven emitter moved the
-direct backend from **6q to 8q** — about 25%. Against the hand-written kernel:
+Replacing two hand-shaped emitters with one contraction-driven emitter first moved
+the direct backend from **6q to 8q** — about 25%. That regression was named rather
+than absorbed, and then removed:
 
 ```
-hand-written                7q
-tessera direct (unified)    8q     1.14x, within one quantum
+                                          hand   direct
+two hand-shaped emitters                    7q      6q
+one contraction-driven emitter              7q      8q     the regression
+  + remove the cancelling `ci - cb`
+  + hoist the loop-invariant staged base    6q      6q     reclaimed
 ```
 
-The 80% invariant is still met at 87.5%, and the correctness is unchanged
-(786432/786432 bit-identical). But the regression is real and should be named rather
-than absorbed: one emitter that derives its schedule costs a little against two that
-were shaped by hand for their kernel. Whether that is worth reclaiming is a question
-for when there is a reason to tune, and the measurement layer is already there.
+Both quanta came back from two changes to the staged read: the emitter was
+computing `stage_a[(ty * 4u + i) * 16u + (t_ci - t_cb)]` per element, where
+`t_ci - t_cb` cancels by construction and the leading term is loop-invariant.
+So one emitter that derives its schedule now matches what two written by hand
+achieved, and the derivation is free. Correctness is unchanged throughout
+(786432/786432 bit-identical). Reproduced most recently at 6q direct against 6q
+hand-written — 1.00x, the two indistinguishable.
+
+**The instructive part is the contrast with probe B.** The same class of tidying —
+removing redundant index arithmetic — was worth nothing through one backend and
+1.33x through the other:
+
+| | | |
+|---|---|---|
+| canonicalize + cse + licm, 7,680 integer ops removed | via MLIR | **1.00x** |
+| remove `ci - cb`, hoist the invariant base | direct | **1.33x** |
+
+What differs is which consumer sees the source. The MLIR path's WGSL is
+reconstructed wholesale by naga, so upstream cleanliness is invisible by the time
+Tint sees it; the direct path's output reaches Tint as written. *"The downstream
+compiler will handle it"* is not a property of the optimisation — it is a property
+of how many translators stand between you and the one that matters.
 
 ## 7. Method note
 
