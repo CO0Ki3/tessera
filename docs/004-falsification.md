@@ -328,3 +328,68 @@ round-trip. **naga validated all 57 occurrences and reported success**; only Tin
 it. A validator that accepts what the target rejects converts a build-time error into a
 runtime one, so the check moved into the compiler (`assertF32Literals`) and into the suite.
 Written up for reporting in `spike/upstream/naga-f32-literal-range.md`.
+
+---
+
+# Part 2 — the third kernel family, and what it costs
+
+Written before starting, same as part 1.
+
+## The question
+
+Part 1 established that the *derivation* is shared and the *schedule vocabulary* is not.
+The open question that follows is about the second half: **is the marginal cost of a
+schedule falling?** If schedule N costs the same as schedule N-1 forever, the design is a
+template collection with an unusually good front end. If the cost falls, the vocabulary is
+converging on something general.
+
+## The kernel: layernorm over a ragged axis
+
+```
+y[m,n] = (x[m,n] - mean_n) / sqrt(var_n + eps),   var = E[x^2] - E[x]^2
+```
+
+Chosen because it is structurally unlike both existing schedules in one specific way, and
+routine enough that the answer generalises:
+
+| | matmul | softmax | layernorm |
+|---|---|---|---|
+| accumulators | 1 (a 2-D register fragment) | 1 (a row vector) | **2** (sum and sum-of-squares) |
+| passes over the reduce axis | 1 | 3 | **1, carrying both** |
+
+Neither existing schedule carries two accumulators through one loop. If the recogniser
+generalises over "N accumulators, M passes" rather than gaining a third hand-written case,
+that is the marginal cost falling.
+
+Note that a masked lane must contribute **zero to both** sums, so `.pad(zero)` is correct
+here — unlike softmax, where the max demanded `negInf`. That the two kernels need
+different identities for the same axis is the point of naming them.
+
+## Scoring, fixed in advance
+
+Reusing the access layer is no longer in question — part 1 settled it. What is measured:
+
+| | |
+|---|---|
+| **A. emitter** | how many lines does the layernorm schedule add, against softmax's 73? |
+| **B. recogniser** | a third hand-written pattern, or does the second one generalise? |
+| **C. derivation** | anything at all in `derive()` / the front end that needs a third case? |
+| **D. surface** | new ops are expected; does anything *structural* have to change? |
+
+**Verdict rule:** the vocabulary is converging if B generalises and C is empty. It is a
+template collection with good ergonomics if B gains a third case and C needs a third
+branch — which would be a fine thing to be, but should be said plainly rather than
+discovered later by someone else.
+
+## Prediction
+
+- **A**: fewer lines than softmax. Layernorm is one pass where softmax is three, and the
+  cross-lane reduction helper already exists — but it reduces two accumulators, so
+  `acrossLanes` will need to take a list rather than one name.
+- **B**: **will need a third case as written.** `checkCanonicalBody` counts specific op
+  names (`mma`, `rowMax`, `rowSum`), so a new op means a new branch. The honest move if
+  that happens is to generalise the recogniser rather than add the branch — the
+  pre-registered response, same as part 1 §4.
+- **C**: empty. Nothing in `derive()` knows about the reduction being performed.
+- **D**: `rowSum` already exists and should serve both accumulators unchanged; `sqrt` and
+  an `eps` constant are new. No structural change expected.
