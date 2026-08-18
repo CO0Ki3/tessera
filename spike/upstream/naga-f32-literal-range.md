@@ -29,40 +29,27 @@ that was exactly representable.
 
 <!-- ─────────────────── BEGIN ISSUE BODY ─────────────────── -->
 
-### Summary
+**Description**
 
-**Firefox and Chrome disagree about whether a shader compiles**, and the literal
-they disagree about is one that naga's own `wgsl-out` produces.
+`wgsl-out` emits a float literal whose value is greater than `f32::MAX`, and
+Chrome (Tint) rejects the result. Given a source containing `f32::MAX` written
+exactly as a hex float, naga writes it back as a decimal that round-trips *as an
+f32* but that, read as WGSL's `AbstractFloat`, is out of range.
 
-Running the same five sources through `createShaderModule` in both browsers:
+The output is accepted by Firefox (naga) and rejected by Chrome (Tint), so the
+same generated shader compiles in one browser and not the other.
 
-| literal | Firefox 153 (naga) | Chrome 151 (Tint) |
-|---|---|---|
-| `3.4028234663852886e38` — exactly `f32::MAX` | accepted | accepted |
-| `340282350000000000000000000000000000000f` — **what naga's `wgsl-out` writes for `f32::MAX`** | **accepted** | **rejected** |
-| `3.4028235e38` — the same value | **accepted** | **rejected** |
-| `3.402823567e38` | **accepted** | **rejected** |
-| `3.4028235677973366e38` — the midpoint | rejected | rejected |
-| `1e39` | rejected | rejected |
+naga's front-end accepts the literal it just produced, which is why a round trip
+looks clean in-tree and only fails at a browser. Its accepted range extends to
+the round-to-nearest midpoint rather than to `f32::MAX` — the signature of
+converting first and testing for finiteness, rather than range-checking before
+conversion.
 
-Row 2 is not a spelling anyone chose. It is byte-for-byte what naga emits, so
-**naga produces WGSL that Chrome will not compile and that Firefox will.**
+This is the WGSL sibling of #4568, which reports `glsl-out` emitting
+`3.4028235e38` where it used to emit `3.4028234663852886e38`. Same root cause,
+different backend, and this one produces a shader a browser refuses.
 
-Firefox's diagnostic for the values it does reject is worth quoting, because the
-word suggests the intent:
-
-```
-the concrete type `f32` cannot represent the abstract value `3.4028235677973366e38` accurately
-```
-
-naga's rule is "does it round to a finite f32", Tint's is "is it ≤ `f32::MAX`",
-and the band between them is accepted by one browser and refused by the other.
-
-### The band is not hypothetical — naga emits into it
-
-Given a shader containing `f32::MAX` written exactly, naga's `wgsl-out` emits a
-literal whose value is **strictly greater than `f32::MAX`**, which Chrome then
-rejects at `createShaderModule`.
+**Repro steps**
 
 ```wgsl
 // in.wgsl
@@ -73,102 +60,144 @@ fn main() {
 }
 ```
 
-```
+```console
 $ naga in.wgsl out.wgsl
 $ grep 'o\[0\]' out.wgsl
     o[0] = 340282350000000000000000000000000000000f;
 ```
 
 ```
-340282350000000000000000000000000000000  =  3.4028235e38
-f32::MAX                                 =  3.4028234663852886e38
+emitted    340282350000000000000000000000000000000  =  3.4028235e38
+f32::MAX                                               3.4028234663852886e38
 ```
 
-The emitted decimal round-trips *as an f32*, so it is a correct shortest
-round-trip spelling. But WGSL parses an unsuffixed or `f`-suffixed decimal as an
-AbstractFloat first, and as a real number `3.4028235e38 > f32::MAX`. Chrome
-rejects it:
+The SPIR-V round trip produces the same literal, so this is the shared float
+formatting rather than one backend:
+
+```console
+$ naga in.wgsl mid.spv && naga mid.spv rt.wgsl
+$ grep '= 3' rt.wgsl
+    global.member[0u] = 340282350000000000000000000000000000000f;
+```
+
+Paste `out.wgsl` into `device.createShaderModule()` in Chrome to see it refused.
+A self-contained page that runs the boundary cases through `createShaderModule`
+and prints each verdict is attached below.
+
+**Expected vs observed behavior**
+
+*Expected*: a WGSL value that is exactly representable in `f32` round-trips
+through `wgsl-out` as a literal every WGSL implementation accepts. An exact
+spelling is available and is what the input used — `0x1.fffffep+127`, or
+`3.4028234663852886e38`.
+
+*Observed*: the emitted literal is greater than `f32::MAX` as a real number, and
+is refused by Tint.
+
+Running the boundary through `createShaderModule` on both browsers:
+
+| literal | Firefox 153 (naga) | Chrome 151 (Tint) |
+|---|---|---|
+| `3.4028234663852886e38` — exactly `f32::MAX` | accepted | accepted |
+| `340282350000000000000000000000000000000f` — **what `wgsl-out` writes** | **accepted** | **rejected** |
+| `3.4028235e38` — the same value | **accepted** | **rejected** |
+| `3.402823567e38` | **accepted** | **rejected** |
+| `3.4028235677973366e38` — the midpoint | rejected | rejected |
+| `1e39` | rejected | rejected |
+
+Tint:
 
 ```
 value 340282349999999991754788743781432688640.0 cannot be represented as 'f32'
 ```
 
-The same literal comes out of the SPIR-V round trip (`naga in.wgsl mid.spv` then
-`naga mid.spv rt.wgsl`), so it is the shared float formatting, not one backend.
-
-This is the WGSL sibling of #4568, which reports `glsl-out` emitting
-`3.4028235e38` where it used to emit `3.4028234663852886e38`.
-
-**An exact spelling is available and shorter to reason about**: `0x1.fffffep+127`
-is already what the input used, and `3.4028234663852886e38` also works.
-
-### The front-end accepts what it emits, which is why this is invisible here
-
-naga's validator accepts the literal it just produced, so a round trip looks
-clean and only fails at a browser. The accepted range extends to the
-round-to-nearest midpoint — the signature of converting first and then testing
-for finiteness, rather than range-checking before conversion:
+Firefox, for the values it does reject — note *accurately* rather than a range
+complaint, which is consistent with convert-then-test-finiteness:
 
 ```
-3.402823567e38   ACCEPTED    (midpoint is 3.4028235677973366e38)
-3.40282366e38    rejected    error: the concrete type `f32` cannot represent the abstract value
+the concrete type `f32` cannot represent the abstract value `3.4028235677973366e38` accurately
+```
+
+There are two separable things here, and the first does not depend on how the
+spec reads:
+
+1. **`wgsl-out` should not emit a literal outside the target type's range.** The
+   input value was exactly representable, an exact spelling exists, and the
+   output is refused by another implementation.
+2. **Whether the front-end should accept such a literal** depends on §15.7.6
+   Floating Point Conversion, and I could not get a definitive reading of it. If
+   rounding an out-of-range `AbstractFloat` is specified, naga is right here and
+   Tint is wrong; if the value must be in range before rounding, the fix is to
+   compare against `f32::MAX` before converting. Either way (1) stands, and (2)
+   is what keeps (1) from being caught in-tree.
+
+Happy to send the CTS cases for the band, and the naga fix, once you say which
+answer (2) should have.
+
+**Extra materials**
+
+*The front-end boundary, bisected.* It sits exactly at the round-to-nearest
+midpoint between `f32::MAX` and `2^128`:
+
+```
+3.402823567e38   accepted     (midpoint is 3.4028235677973366e38)
+3.40282366e38    rejected     error: the concrete type `f32` cannot represent the abstract value
 1e39             rejected
 ```
 
-So the check exists; this is where the boundary sits. It holds in every position,
-including the `f`-suffixed one that §3.5.2 names directly:
+So the check exists and works for values that round to infinity; this is where
+the boundary is.
+
+*Every literal position accepts it*, including the `f`-suffixed one that §3.5.2
+names directly — and the suffixed form is what `wgsl-out` writes:
 
 ```
-o[0] = 3.4028235e38;              ACCEPTED
-let v = 3.4028235e38;             ACCEPTED
-const C : f32 = 3.4028235e38;     ACCEPTED
-override C : f32 = 3.4028235e38;  ACCEPTED
-o[0] = 3.4028235e38f;             ACCEPTED   <-- and this is what wgsl-out writes
-vec3f(3.4028235e38).x             ACCEPTED
+o[0] = 3.4028235e38;              accepted
+let v = 3.4028235e38;             accepted
+const C : f32 = 3.4028235e38;     accepted
+override C : f32 = 3.4028235e38;  accepted
+o[0] = 3.4028235e38f;             accepted
+vec3f(3.4028235e38).x             accepted
 ```
 
 > §3.5.2 — A shader-creation error results if: A decimal floating point literal
 > with an `f` or `h` suffix overflows the target type.
 
-### f16 is fine, which locates the problem
+*f16 is unaffected, which locates the defect.* `f16::MAX` is 65504, exactly
+representable as a decimal, so `wgsl-out` writes `65504h` and nothing goes wrong.
+`f32::MAX` is the case where the shortest round-trip decimal exceeds the value it
+denotes. naga's f16 front-end uses the same permissive rule (`65519h` accepted,
+`65520h` — the midpoint — rejected), so the two are consistent; f16 simply never
+has to serialize a value in the band.
 
-`f16::MAX` is 65504, which is exactly representable as a decimal, so `wgsl-out`
-writes `65504h` and nothing goes wrong. The f32 maximum is the case where the
-shortest round-trip decimal happens to exceed the value it denotes.
-
-naga's f16 *front-end* uses the same permissive rule (`65519h` accepted, `65520h`
-— the midpoint — rejected), so the two are consistent; f16 simply never has to
-serialize a value that lands in the band.
-
-### Why the CTS has not caught it
-
+*Why the CTS has not caught it.*
 `src/webgpu/shader/validation/parse/literal.spec.ts` tests overflow with
 `1.0e+999999999999f` and `0x1.0p+999999999999f` — values that round to infinity,
 which both implementations already reject. Nothing exercises the region between
 `f32::MAX` and the midpoint.
 
-### Two things here, one of them spec-independent
+*Repro page.* A single self-contained HTML file that runs the six cases through
+`createShaderModule` and prints each browser's verdict, for pasting results
+without describing them:
+<!-- attach f32-literal.html, or inline it here -->
 
-1. **`wgsl-out` should not emit a literal outside the target type's range.**
-   This holds whatever §15.7.6 says: the input value was exactly representable,
-   an exact spelling exists, and the output is refused by another implementation.
-2. **Whether the front-end should accept such a literal** depends on §15.7.6
-   Floating Point Conversion, which I could not get a definitive reading of. If
-   rounding an out-of-range AbstractFloat is specified, naga is right and Tint is
-   wrong; if the value must be in range before rounding, the fix is to compare
-   against `f32::MAX` before converting. Either way (1) stands, and (2) is what
-   keeps (1) from being caught in-tree.
+**Platform**
 
-Happy to send the CTS cases for the band, and the naga fix, once you say which
-answer (2) should have.
+```
+naga / naga-cli   30.0.0   (= wgpu 30.0.0, same release train, 2026-07-02)
+rustc             1.97.1
+OS                macOS 14.1 (23B2073), arm64, Apple M3 Pro
+Firefox           153.0     accepts the emitted literal
+Chrome            151.0     rejects it
+```
 
-### Why it is worth fixing rather than documenting
+The GPU and backend are not involved — `naga in.wgsl out.wgsl` never touches a
+device, and the browser half fails at `createShaderModule`, before any pipeline
+is created.
 
-This surfaced from a compiler that emits WGSL. Its shader passed naga — 57
-occurrences of the literal, "Validation successful" — and failed only in Chrome,
-turning a build-time error into a runtime one. Since naga is the core of the
-WebGPU integration in Firefox, the same literal also decides whether two browsers
-agree that a shader compiles.
+Found by a compiler that emits WGSL: the generated shader passed naga — 57
+occurrences of the literal, "Validation successful" — and failed only once it
+reached Chrome, turning a build-time error into a runtime one.
 
 <!-- ──────────────────── END ISSUE BODY ───────────────────── -->
 
