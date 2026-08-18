@@ -178,3 +178,58 @@ a type error for the same structural reason `pad(1)` reaching a sum already is.
 | 4 | flat index arithmetic | not yet tested |
 | 5 | staging + barriers | not yet tested |
 | 6 | identity obligation | **failed** — and the surface cannot express the right answer |
+
+## R4. Item 6 fixed, and the identity turned out to travel
+
+Identities became named singletons, so the obligation attaches to the operator.
+`rowMax` takes `"exact" | "negInf"` and `mma` takes `"exact" | "zero"`, and the
+dangerous mistake is now a compile error:
+
+```
+rowMax(x.tile(at.m, n).pad(zero), mx)
+  Type '"zero"' is not assignable to type '"exact" | "negInf"'
+```
+
+That is the kernel which is right at 1024 and wrong at 750, for tail rows that happen
+to be entirely negative — caught before it runs.
+
+**An unregistered finding, and the better one.** Writing softmax produced this error on a
+line I believed was correct:
+
+```
+rowSum(expTile(subRow(x.tile(at.m, n).pad(negInf), mx)), sm)
+  Type '"negInf"' is not assignable to type '"exact" | "zero"'
+```
+
+The type system was right and the kernel author was sloppy. `exp(negInf - anything)` is
+zero, so a block padded with the *max* identity comes out of `exp` padded with the
+*additive* identity — which is precisely what the following `rowSum` needs. The identity
+element **transforms through operations**, and that had to be written down:
+
+```ts
+expTile(...): Tile<S, D, P extends "negInf" ? "zero" : P>
+```
+
+Nobody asserted the two identities were interchangeable; they are not. One operation
+converts one into the other, and now the type says which. This was not predicted, was
+not in the scorecard, and is the most interesting thing the experiment has produced.
+
+## R5. The access layer is schedule-independent — measured, not asserted
+
+Masking and flat indexing were inline in the matmul staging loops. Extracting them into
+`guards` / `emitLoad` / `emitStore`, which know only a binding, two coordinate
+expressions, and which axes are ragged, produced **byte-identical WGSL for both matmul
+kernels**. The logic was already generic; it simply was not factored.
+
+Whether softmax can use it unchanged is the remaining measurement.
+
+## Scorecard
+
+| # | derived thing | verdict |
+|---|---|---|
+| 1 | dispatch extents | **reused** — 4 lines to generalise |
+| 2 | load masks | **schedule-independent** — extraction left matmul byte-identical; softmax's use not yet emitted |
+| 3 | store mask | same |
+| 4 | flat index arithmetic | same |
+| 5 | staging + barriers | not yet — softmax stages nothing, and needs cross-lane reduction scratch instead |
+| 6 | identity obligation | **was broken, now fixed**, and generalised further than predicted |

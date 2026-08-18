@@ -227,6 +227,8 @@ export interface InputHandle<A0 extends AnyAxis, A1 extends AnyAxis, D extends D
 }
 
 export interface OutputSlot<S extends readonly [number, number], D extends DType> {
+  /** Softmax stores a block it just computed, not a register fragment. */
+  store(block: Tile<S, D, PadState>): void;
   /** Always edge-clipped. A masked WRITE needs no identity, so none is asked for. */
   store(v: Frag<S, D>): void;
 }
@@ -259,6 +261,65 @@ export declare function mma<
   b: Tile<readonly [NoInfer<BK>, BN], NoInfer<D>, "exact" | "zero">,
   acc: Frag<readonly [NoInfer<BM>, NoInfer<BN>], NoInfer<D>>,
 ): Frag<readonly [BM, BN], D>;
+
+/* ------------------------------------------------------- row reductions */
+/**
+ * A per-row accumulator: one value for each of the BM rows a workgroup owns.
+ *
+ * Softmax reduces along the axis it also stores along, so unlike matmul's
+ * `Frag` there is no second block dimension to accumulate into.
+ */
+export interface RowVec<BM extends number, D extends DType> {
+  readonly __rows: BM;
+  readonly __dtype: D;
+}
+
+/** Start a row accumulator at a reduction's identity. */
+export declare function rowFill<BM extends number, D extends DType, N extends PadName>(
+  rows: BM, dtype: D, identity: Identity<N>,
+): RowVec<BM, D>;
+
+/**
+ * Reduce a block into the per-row max.
+ *
+ * Takes `"exact" | "negInf"` and nothing else: padding a masked max with zero
+ * gives a kernel that is right whenever the row holds a positive value and
+ * silently wrong when every value is negative — in the ragged tail only.
+ */
+export declare function rowMax<BM extends number, BN extends number, D extends DType>(
+  block: Tile<readonly [BM, BN], D, "exact" | "negInf">,
+  acc: RowVec<NoInfer<BM>, NoInfer<D>>,
+): RowVec<BM, D>;
+
+/** Reduce a block into the per-row sum. Takes the additive identity. */
+export declare function rowSum<BM extends number, BN extends number, D extends DType>(
+  block: Tile<readonly [BM, BN], D, "exact" | "zero">,
+  acc: RowVec<NoInfer<BM>, NoInfer<D>>,
+): RowVec<BM, D>;
+
+/** Elementwise, broadcasting the row accumulator across the block's columns. */
+export declare function subRow<BM extends number, BN extends number, D extends DType, P extends PadState>(
+  block: Tile<readonly [BM, BN], D, P>, row: RowVec<NoInfer<BM>, NoInfer<D>>,
+): Tile<readonly [BM, BN], D, P>;
+
+export declare function divRow<BM extends number, BN extends number, D extends DType, P extends PadState>(
+  block: Tile<readonly [BM, BN], D, P>, row: RowVec<NoInfer<BM>, NoInfer<D>>,
+): Tile<readonly [BM, BN], D, P>;
+
+/**
+ * Elementwise exp — and the identity element travels through it.
+ *
+ * `exp(negInf - anything)` is 0, so a block padded with the max identity comes
+ * out padded with the ADDITIVE identity, which is exactly what a following
+ * `rowSum` requires. Writing that in the type is what lets the softmax body
+ * type-check without anyone asserting the two identities are interchangeable —
+ * they are not, and only this operation converts one into the other.
+ *
+ * Non-recursive, depth 1: the surface's rule about conditional types holds.
+ */
+export declare function expTile<BM extends number, BN extends number, D extends DType, P extends PadState>(
+  block: Tile<readonly [BM, BN], D, P>,
+): Tile<readonly [BM, BN], D, P extends "negInf" ? "zero" : P>;
 
 export declare function relu<S extends readonly [number, number], D extends DType>(
   x: Frag<S, D>): Frag<S, D>;
