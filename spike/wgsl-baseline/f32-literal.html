@@ -1,5 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
+<meta http-equiv="cache-control" content="no-store">
 <title>f32 literal range: does this browser accept it?</title>
 <style>
   body { font: 14px ui-monospace, Menlo, monospace; margin: 2rem; max-width: 60rem; }
@@ -7,7 +8,11 @@
   .ok { color: #197f19 } .bad { color: #b00 } .dim { color: #777 }
   pre { background: #f4f4f4; padding: .6rem; overflow-x: auto }
 </style>
-<h3>f32 literal range</h3>
+<h3>f32 literal range <span class="dim">— rev 2, 6 rows</span></h3>
+<p class="dim">
+  If you do not see six rows and a row labelled <b>what naga's wgsl-out emits</b>,
+  you are looking at a cached copy.
+</p>
 <p class="dim">
   naga (Firefox, Servo, Deno) and Tint (Chrome) draw the upper bound of a float
   literal in different places. naga accepts anything that <em>rounds</em> to a
