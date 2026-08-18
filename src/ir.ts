@@ -12,6 +12,16 @@ export type DTypeName = "f32" | "f16" | "i32";
 export type PadName = "zero" | "one" | "negInf" | "posInf";
 
 /**
+ * Which schedule the body describes.
+ *
+ * An honest admission: tessera recognises a fixed set of schedules rather than
+ * compiling an arbitrary body. What the falsification test measures is whether
+ * the DERIVED parts — masks, indexing, dispatch — are shared across them, or
+ * re-written per schedule. See docs/004.
+ */
+export type Schedule = "matmul" | "softmax";
+
+/**
  * The literal a backend emits for an identity.
  *
  * WGSL has no infinity literal, so the infinities are the largest finite
@@ -47,6 +57,7 @@ export interface BindingIR {
 
 export interface KernelIR {
   readonly name: string;
+  readonly schedule: Schedule;
   readonly dtype: DTypeName;
   readonly tile: { readonly bm: number; readonly bn: number; readonly bk: number };
   /** Exactly two, blocked at bm and bn respectively. */
@@ -87,6 +98,7 @@ export function derive(
   dtype: DTypeName,
   grid: readonly AxisIR[],
   workgroup: readonly [number, number, number] = [16, 16, 1],
+  schedule: Schedule = "matmul",
 ): Pick<KernelIR, "workgroup" | "fragment" | "workgroupBytes" | "dispatch"> {
   const [wgx, wgy, wgz] = workgroup;
   const invocations = wgx * wgy * wgz;
@@ -105,7 +117,12 @@ export function derive(
     throw new Error(`tile ${tile.bm}x${tile.bn} does not divide evenly over workgroup ${wgx}x${wgy}`);
   }
 
-  const workgroupBytes = (tile.bm * tile.bk + tile.bk * tile.bn) * DTYPE_BYTES[dtype];
+  // Workgroup memory is the one budget that is genuinely per-schedule: matmul
+  // stages two operand tiles, softmax stages nothing and needs a [rows x lanes]
+  // scratch for the cross-lane row reduction instead.
+  const workgroupBytes = schedule === "matmul"
+    ? (tile.bm * tile.bk + tile.bk * tile.bn) * DTYPE_BYTES[dtype]
+    : tile.bm * wgx * DTYPE_BYTES[dtype];
   // WebGPU guarantees 16384; tessera reserves headroom so a later double-buffer
   // does not force a tile change.
   if (workgroupBytes > 16384 - 4096) {

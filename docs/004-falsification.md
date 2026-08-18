@@ -1,6 +1,6 @@
 # 004 — The falsification test: is this a compiler or a template?
 
-Status: **in progress.** Surface generalised; item 6 failed as predicted, and worse.
+Status: **run.** Verdict by the rule fixed in §3: **compiler** — with one caveat the rule did not ask about, recorded in R7.
 
 Written *before* attempting the second kernel, on purpose. The failure mode this
 guards against is reading whatever happens as a success.
@@ -233,3 +233,67 @@ Whether softmax can use it unchanged is the remaining measurement.
 | 4 | flat index arithmetic | same |
 | 5 | staging + barriers | not yet — softmax stages nothing, and needs cross-lane reduction scratch instead |
 | 6 | identity obligation | **was broken, now fixed**, and generalised further than predicted |
+
+## R6. The softmax emitter contains no masking logic
+
+Measured, not asserted. The softmax schedule is 73 lines. Inside it:
+
+```
+select(   0        min(      0        bound comparisons  0
+ragged    0        guards    0        extent             1   (a loop bound)
+
+emitLoad  2 calls  emitStore 1 call
+```
+
+Every access goes through the shared access layer. The generated WGSL has **64 bound
+checks on the ragged `n` axis and 0 on the exact `m` axis**, the pad is
+`-3.4028235e38` because the kernel said `.pad(negInf)`, and the store is guarded:
+
+```wgsl
+let off = row * 750u + col;
+let v = select(-3.4028235e38, x[min(off, 767999u)], col < 750u);
+...
+if (col < 750u) { y[row * 750u + col] = exp(v - mx[0]) / sm[0]; }
+```
+
+naga validates it, and the matmul suite is unchanged.
+
+## R7. Verdict, and the caveat the rule did not ask about
+
+| # | derived thing | verdict |
+|---|---|---|
+| 1 | dispatch extents | **reused** — 4 lines to generalise from 2 axes to 1–3 |
+| 2 | load masks | **reused** — 0 lines of masking in the softmax path |
+| 3 | store mask | **reused** — same |
+| 4 | flat index arithmetic | **reused** — same |
+| 5 | staging + barriers | **schedule-specific**, as predicted. softmax stages nothing and needs a rows×lanes scratch and two reduction barriers instead |
+| 6 | identity obligation | **was broken, now fixed** and generalised further than predicted |
+
+By §3's rule that is **compiler**: items 1–4 came out of the existing derivation with no
+softmax-specific masking, and item 6 generalised — `rowMax` takes `"exact" | "negInf"`, so
+padding a masked max with zero does not compile.
+
+**The caveat, stated plainly because §3 did not think to ask.** tessera *recognises*
+schedules; it does not compile an arbitrary body. `checkCanonicalBody` now matches two
+patterns — mma-into-a-Frag, and rowMax-then-rowSum-then-store — and refuses anything else
+rather than approximating it. A third kernel family will need a third recogniser.
+
+So the honest statement is narrower than "compiler" and wider than "template":
+
+> The **derivation** is general — masks, indexing, dispatch and the identity obligation
+> are computed from the axis types and are shared across schedules, measured at zero
+> lines of duplication. The **schedule vocabulary** is a fixed set, and grows one entry
+> per kernel family.
+
+That is roughly where Triton sits: `tl.load(..., mask=...)` is general, but the set of
+things the language knows how to lower is finite and grows deliberately. The difference
+that matters is which half had to be rewritten for kernel number two, and the answer
+measured here is: not the derivation.
+
+## R8. Not yet verified
+
+The softmax WGSL validates but **has not been run**. Emitting plausible code is not
+correctness, and this project's own history says so — the ragged matmul looked wrong for
+a whole round before the bug turned out to be in the harness. A CPU oracle and a bit-exact
+differential at 1024x750, with the 46-column tail, is required before any of the above is
+worth repeating aloud.

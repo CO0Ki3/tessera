@@ -18,7 +18,7 @@
 
 import ts from "typescript";
 import {
-  derive, type AxisIR, type BindingIR, type DTypeName, type KernelIR, type PadName,
+  derive, type AxisIR, type BindingIR, type DTypeName, type KernelIR, type PadName, type Schedule,
 } from "./ir.ts";
 
 const PAD_NAMES = ["zero", "one", "negInf", "posInf"] as const;
@@ -158,7 +158,7 @@ function checkCanonicalBody(
   reduceAxes: readonly AxisIR[],
   bindings: readonly BindingIR[],
   raggedNames: ReadonlySet<string>,
-): { padded: Map<string, PadName> } {
+): { padded: Map<string, PadName>; schedule: Schedule } {
   const body = call.arguments[1];
   if (!body || (!ts.isArrowFunction(body) && !ts.isFunctionExpression(body))) {
     fail(body ?? call, "kernel()'s second argument must be a function");
@@ -183,17 +183,18 @@ function checkCanonicalBody(
     ts.SyntaxKind.Identifier,
   ]);
 
-  let forOf = 0, mma = 0, store = 0, zeros = 0;
-  const padded = new Map<string, PadName>();
-
-  // Tokens (punctuation, keywords, identifiers, literals) carry no admission
-  // decision of their own — the node that owns them is already constrained, and
-  // a token has no children to recurse into. Two are hazards in their own right.
+  // Tokens carry no admission decision of their own — the node that owns them is
+  // already constrained, and a token has no children. Two are hazards in themselves.
   const DENIED_TOKENS = new Set<ts.SyntaxKind>([
     ts.SyntaxKind.ThisKeyword,
     ts.SyntaxKind.SuperKeyword,
     ts.SyntaxKind.ImportKeyword,
   ]);
+
+  let forOf = 0, store = 0;
+  const op = new Map<string, number>();
+  const bump = (nm: string) => op.set(nm, (op.get(nm) ?? 0) + 1);
+  const padded = new Map<string, PadName>();
 
   const visit = (n: ts.Node): void => {
     if (ts.isToken(n)) {
@@ -206,8 +207,8 @@ function checkCanonicalBody(
     if (!ADMITTED.has(n.kind)) {
       fail(n,
         `TSA0104: ${ts.SyntaxKind[n.kind]} is not admitted inside a kernel body. ` +
-        `This build emits only the canonical accumulate-and-store shape; rather than ` +
-        `silently compiling something that is not what you wrote, it refuses.`);
+        `This build emits a fixed set of schedules; rather than silently compiling ` +
+        `something that is not what you wrote, it refuses.`);
     }
     if (ts.isBinaryExpression(n) && n.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
       fail(n,
@@ -216,27 +217,20 @@ function checkCanonicalBody(
     }
 
     if (ts.isForOfStatement(n)) forOf++;
-    else if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
-      if (n.expression.text === "mma") mma++;
-      if (n.expression.text === "zeros") zeros++;
-    } else if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
+    else if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) bump(n.expression.text);
+    else if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
       const method = n.expression.name.text;
       if (method === "store") store++;
       if (method === "pad") {
-        // `a.tile(...).pad(0)` — the receiver is the tile() call, whose own
-        // receiver names the binding.
         const inner = n.expression.expression;
         const owner = ts.isCallExpression(inner) && ts.isPropertyAccessExpression(inner.expression)
           && ts.isIdentifier(inner.expression.expression)
           ? inner.expression.expression.text : undefined;
         if (!owner || !bindings.some((b) => b.name === owner)) {
-          fail(n, `.pad() must be called on a binding's tile, as <binding>.tile(...).pad(0)`);
+          fail(n, `.pad() must be called on a binding's tile, as <binding>.tile(...).pad(zero)`);
         }
-        // The identity arrives as a named symbol (`zero`, `negInf`, ...), not a
-        // number: -Infinity has no literal type in TypeScript, so numbers cannot
-        // carry the identity a masked max needs. Which identity an operator
-        // ACCEPTS is enforced by the surface types; this only records which one
-        // was named, and rejects anything that is not one of them.
+        // Which identity an operator ACCEPTS is enforced by the surface types;
+        // this only records which one was named.
         const arg = n.arguments[0];
         const named = arg && ts.isIdentifier(arg) ? arg.text : undefined;
         if (!named || !(PAD_NAMES as readonly string[]).includes(named)) {
@@ -248,20 +242,47 @@ function checkCanonicalBody(
         padded.set(owner, named as PadName);
       }
     }
-
     ts.forEachChild(n, visit);
   };
   visit(body.body);
 
-  const shape = `${zeros} zeros / ${forOf} loops / ${mma} mma / ${store} store`;
-  if (zeros !== 1 || forOf !== reduceAxes.length || mma !== 1 || store !== 1) {
-    fail(body,
-      `this build only emits the canonical accumulate-and-store body ` +
-      `(1 zeros, ${reduceAxes.length} reduce loop(s), 1 mma, 1 store); this body is ${shape}. ` +
-      `General body compilation is not implemented — refusing rather than emitting something ` +
-      `that is not what you wrote.`);
+  // ---- which schedule is this? --------------------------------------------
+  // Recognition, not compilation. The set is fixed and small, and a body that
+  // matches none of them is refused rather than approximated.
+  const n = (nm: string) => op.get(nm) ?? 0;
+  const isMatmul = n("mma") > 0;
+  const isSoftmax = n("rowMax") > 0 || n("rowSum") > 0;
+
+  if (isMatmul && isSoftmax) {
+    fail(body, `this body mixes mma with row reductions; no schedule matches it.`);
   }
-  return { padded };
+
+  let schedule: Schedule;
+  if (isMatmul) {
+    schedule = "matmul";
+    const shape = `${n("zeros")} zeros / ${forOf} loops / ${n("mma")} mma / ${store} store`;
+    if (n("zeros") !== 1 || forOf !== reduceAxes.length || n("mma") !== 1 || store !== 1) {
+      fail(body,
+        `the matmul schedule is 1 zeros, ${reduceAxes.length} reduce loop(s), 1 mma, ` +
+        `1 store; this body is ${shape}.`);
+    }
+  } else if (isSoftmax) {
+    schedule = "softmax";
+    const shape = `${n("rowFill")} rowFill / ${forOf} loops / ${n("rowMax")} rowMax / ` +
+                  `${n("rowSum")} rowSum / ${store} store`;
+    if (n("rowFill") !== 2 || forOf !== 3 || n("rowMax") !== 1 || n("rowSum") !== 1 || store !== 1) {
+      fail(body,
+        `the softmax schedule is 2 rowFill, 3 loops, 1 rowMax, 1 rowSum, 1 store; ` +
+        `this body is ${shape}.`);
+    }
+  } else {
+    fail(body,
+      `no schedule matches this body. Recognised today: a matmul (mma into a Frag) and ` +
+      `a row softmax (rowMax then rowSum then store). Compiling an arbitrary admitted ` +
+      `body is not implemented, and guessing would emit something you did not write.`);
+  }
+
+  return { padded, schedule };
 }
 
 // ---------------------------------------------------------------------------
@@ -307,14 +328,17 @@ export function compileToIR(entryFile: string): KernelIR {
   const name = readSpecName(specNode);
 
   // ---- tile -------------------------------------------------------------
-  const tileT = propType(checker, spec, "tile") ?? fail(specNode, "spec.tile is missing");
-  const tile = {
-    bm: numberLiteral(checker, tileT, "bm", "tile"),
-    bn: numberLiteral(checker, tileT, "bn", "tile"),
-    bk: numberLiteral(checker, tileT, "bk", "tile"),
-  };
-  const dtypeT = propType(checker, tileT, "dtype") ?? fail(specNode, "tile.dtype is missing");
-  const dtype = readDType(checker, dtypeT, "tile");
+  // `tile` is optional. An Axis already carries its own block, so the triple is
+  // only a convenience (and the source of the legal-tile diagnostic); when it is
+  // absent the blocks come from the axes and the dtype from the bindings.
+  const tileT = propType(checker, spec, "tile");
+  const declaredTile = tileT
+    ? {
+        bm: numberLiteral(checker, tileT, "bm", "tile"),
+        bn: numberLiteral(checker, tileT, "bn", "tile"),
+        bk: numberLiteral(checker, tileT, "bk", "tile"),
+      }
+    : undefined;
 
   // ---- axes -------------------------------------------------------------
   const gridT = propType(checker, spec, "grid") ?? fail(specNode, "spec.grid is missing");
@@ -333,12 +357,11 @@ export function compileToIR(entryFile: string): KernelIR {
   // hard-wired "two grid axes, one reduce axis blocked at bk" into the surface.
   // Reported here instead: one error, and kernels that are not matmul-shaped can
   // exist. docs/001 §7 listed suppressing that cascade as outstanding work.
-  const tileDecl = propType(checker, spec, "tile");
-  if (tileDecl && grid.length === 2) {
+  if (declaredTile && grid.length === 2) {
     const named: [string, number, number][] = [
-      [grid[0].name, grid[0].block, tile.bm],
-      [grid[1].name, grid[1].block, tile.bn],
-      [reduce[0].name, reduce[0].block, tile.bk],
+      [grid[0].name, grid[0].block, declaredTile.bm],
+      [grid[1].name, grid[1].block, declaredTile.bn],
+      [reduce[0].name, reduce[0].block, declaredTile.bk],
     ];
     for (const [nm, got, want] of named) {
       if (got !== want) {
@@ -352,6 +375,14 @@ export function compileToIR(entryFile: string): KernelIR {
   const byName = new Map([...grid, ...reduce].map((a) => [a.name, a]));
 
   // ---- bindings ---------------------------------------------------------
+  const dtype: DTypeName = declaredTile
+    ? readDType(checker, propType(checker, tileT!, "dtype")!, "tile")
+    : (() => {
+        const bt = tupleElements(checker, propType(checker, spec, "bindings")
+          ?? fail(specNode, "spec.bindings is missing"))[0];
+        return readDType(checker, propType(checker, bt, "dtype")!, "binding 0");
+      })();
+
   const bindingsT = propType(checker, spec, "bindings") ?? fail(specNode, "spec.bindings is missing");
   const bindings: BindingIR[] = tupleElements(checker, bindingsT).map((bt, i) => {
     const bname = stringLiteral(checker, bt, "name", `binding ${i}`);
@@ -402,7 +433,7 @@ export function compileToIR(entryFile: string): KernelIR {
     for (const ax of b.axes) if (raggedNames.has(ax)) maskedLoads.push(`${b.name}:${ax}`);
   }
 
-  const { padded } = checkCanonicalBody(call, reduce, bindings, raggedNames);
+  const { padded, schedule } = checkCanonicalBody(call, reduce, bindings, raggedNames);
 
   // Every read binding touching a ragged axis needs its identity named; the
   // surface enforces this too, but this message names the binding directly.
@@ -432,8 +463,15 @@ export function compileToIR(entryFile: string): KernelIR {
   }
   const pad: PadName = (names.values().next().value ?? "zero") as PadName;
 
+  // The block sizes the emitter needs, whether or not a tile was declared.
+  // matmul blocks two parallel axes and one reduction; softmax blocks one
+  // parallel axis and reduces along the axis it also stores along.
+  const tile = declaredTile ?? (schedule === "matmul"
+    ? { bm: grid[0].block, bn: grid[1].block, bk: reduce[0].block }
+    : { bm: grid[0].block, bn: reduce[0].block, bk: reduce[0].block });
+
   return {
-    name, dtype, tile, grid, reduce, bindings, maskedLoads, pad,
-    ...derive(tile, dtype, grid),
+    name, schedule, dtype, tile, grid, reduce, bindings, maskedLoads, pad,
+    ...derive(tile, dtype, grid, undefined, schedule),
   };
 }
