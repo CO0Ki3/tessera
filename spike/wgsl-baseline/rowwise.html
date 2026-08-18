@@ -37,8 +37,10 @@
 <pre id="log">Ready.</pre>
 
 <script type="module">
-import { initDevice, compile } from "./run.js";
-import { createRunner, measureInterleaved } from "./measure.js";
+import { initDevice } from "./run.js";
+import { measureInterleaved } from "./measure.js";
+import { makeRunner, typegpuStatus } from "./runners.js";
+const TYPEGPU = await typegpuStatus();
 import { randomF32, softmaxF32, layernormF32, rowSums, rowMoments, maxUlpDiff,
          absErrorAgainstScale, allClose, summarize, bitExactCount } from "./oracle.js";
 
@@ -108,15 +110,42 @@ async function main() {
     const bounds = (src.match(/< \d+u\)/g) ?? []).length;
     write(`shader    ${src.split("\n").length} lines   ${bounds} synthesised bound checks`);
 
-    const { pipeline, messages } = await compile(ctx.device, src, man.entryPoint, K.key);
-    for (const m of messages) write(`<span class="warn">${m.type}</span> ${m.message}`);
-
     const x = randomF32(M * N, 0x99);
-    const runner = createRunner(ctx, pipeline, [x], man, K.key);
-    const st = (await measureInterleaved([runner], { warmup: 6, reps: 12 })).get(K.key);
-    if (st) write(`gpu       min ${st.minQ}q  med ${st.medianQ}q  spread ${st.spreadQ}q`);
 
-    const got = await runner.result();
+    // Both resource layers, interleaved. These kernels have TWO bindings rather
+    // than the matmul's three, and their output binding is at index 1 rather than
+    // 2, so this is the case that would catch an adapter which happened to work
+    // only for the shape it was written against.
+    const built = await makeRunner(ctx, {
+      source: src, manifest: man, inputs: [x], label: K.key,
+    });
+    for (const m of built.messages) write(`<span class="warn">${m.type}</span> ${m.message}`);
+    const runners = [built.runner];
+
+    let tg = null;
+    if (TYPEGPU.available) {
+      tg = (await makeRunner(ctx, {
+        runtime: "typegpu", source: src, manifest: man, inputs: [x], label: `${K.key}:tg`,
+      })).runner;
+      runners.push(tg);
+    }
+
+    const stats = await measureInterleaved(runners, { warmup: 6, reps: 12 });
+    const st = stats.get(K.key), sg = tg ? stats.get(`${K.key}:tg`) : null;
+    if (st) {
+      write(`gpu       min ${st.minQ}q  med ${st.medianQ}q  spread ${st.spreadQ}q` +
+            (sg ? `   <span class="dim">TypeGPU resources: min ${sg.minQ}q  med ${sg.medianQ}q</span>`
+                : TYPEGPU.available ? "" : `   <span class="dim">(TypeGPU: ${TYPEGPU.reason})</span>`));
+    }
+
+    const got = await built.runner.result();
+    if (tg) {
+      const same = bitExactCount(await tg.result(), got);
+      write(`typegpu   bit-exact ${same} / ${got.length}` +
+            (same === got.length ? `  <span class="ok">IDENTICAL</span>`
+                                 : `  <span class="bad">DIVERGENT — the adapter is binding ` +
+                                   `something differently</span>`));
+    }
     const s = summarize(got);
     write(`output    min ${f(s.min, 6)}  max ${f(s.max, 6)}  nans ${s.nans}`);
 
@@ -163,7 +192,7 @@ async function main() {
             `   <span class="dim">(tail starts at column ${N - (N % 64)})</span>`);
     }
     write("");
-    runner.destroy();
+    for (const r of runners) r.destroy();
   }
 }
 </script>

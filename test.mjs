@@ -259,6 +259,27 @@ console.log("\nharness artifacts");
 // from the WGSL, and WebGPU validates against the layout — so a disagreement
 // between the two binds the wrong buffers and still runs. Checkable on the CPU,
 // so checked here. Skips itself if typegpu was never vendored.
+// One place decides which resource layer a kernel runs on. Three pages each
+// wanting a runner is how `if (runtime === "typegpu")` becomes three copies, and
+// the optional-dependency handling with it -- which is where it rots, because
+// only one of the three gets read after a TypeGPU upgrade.
+{
+  const H = "spike/wgsl-baseline";
+  const pages = ["matmul.html", "ragged.html", "rowwise.html"];
+  const src = Object.fromEntries(pages.map((f) => [f, readFileSync(join(H, f), "utf8")]));
+
+  const byHand = pages.filter((f) => {
+    const body = src[f].slice(src[f].indexOf('<script type="module">'));
+    return /\bcreateRunner\s*\(|\bcompile\s*\(\s*ctx\.device/.test(body);
+  });
+  if (byHand.length) bad(`these pages build a runner by hand instead of via runners.js: ${byHand.join(", ")}`);
+  else ok(`all ${pages.length} harness pages go through runners.js`);
+
+  const noTg = pages.filter((f) => !/typegpuStatus/.test(src[f]) || !/"typegpu"/.test(src[f]));
+  if (noTg.length) bad(`these pages do not exercise the TypeGPU adapter: ${noTg.join(", ")}`);
+  else ok(`all ${pages.length} pages run the TypeGPU adapter alongside the raw path`);
+}
+
 console.log("\ntypegpu adapter");
 try {
   const out = execFileSync("node", ["spike/wgsl-baseline/vendor.mjs", "--check"], { stdio: "pipe" })

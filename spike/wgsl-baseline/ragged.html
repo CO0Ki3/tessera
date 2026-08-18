@@ -38,8 +38,10 @@
 <pre id="log">Ready.</pre>
 
 <script type="module">
-import { initDevice, compile } from "./run.js";
-import { createRunner, measureInterleaved } from "./measure.js";
+import { initDevice } from "./run.js";
+import { measureInterleaved } from "./measure.js";
+import { makeRunner, typegpuStatus } from "./runners.js";
+const TYPEGPU = await typegpuStatus();
 import { randomF32, matmulReluF32, allClose, summarize, bitExactCount,
          dotAbsSum, withinErrorBound } from "./oracle.js";
 
@@ -97,18 +99,31 @@ async function main() {
     { key: "mlir",   file: "./matmul-ragged.wgsl",        man, label: "via MLIR " },
     { key: "direct", file: "./matmul-ragged-direct.wgsl", manFile: "./matmul-ragged-direct.json",
       label: "direct   " },
+    // The direct kernel again, with TypeGPU owning the buffers and the bind
+    // group. This is the kernel where getting the binding order wrong matters
+    // most: 18 synthesised masks mean a swapped operand still produces
+    // plausible-looking finite numbers in the tails rather than an obvious
+    // crash, so "bit-exact against the raw path" is the check with teeth.
+    { key: "typegpu", file: "./matmul-ragged-direct.wgsl", manFile: "./matmul-ragged-direct.json",
+      runtime: "typegpu", label: "TypeGPU  " },
   ];
   const runners = [];
   for (const bk of BACKENDS) {
+    if (bk.runtime === "typegpu" && !TYPEGPU.available) {
+      write(`${bk.label}     <span class="warn">skipped</span> — ${TYPEGPU.reason}`);
+      continue;
+    }
     const m2 = bk.man ?? await (await fetch(bk.manFile)).json();
     let src;
     try { src = await (await fetch(bk.file)).text(); }
     catch { write(`${bk.label}  <span class="warn">skipped</span>`); continue; }
-    const { pipeline, messages } = await compile(ctx.device, src, m2.entryPoint, bk.key);
+    const { runner, messages } = await makeRunner(ctx, {
+      runtime: bk.runtime, source: src, manifest: m2, inputs: [a, b], label: bk.key,
+    });
     for (const mm of messages) write(`<span class="warn">${mm.type}</span> ${mm.message}`);
     write(`${bk.label}     ${String(src.split("\n").length).padStart(4)} lines   ` +
           `${String(src.match(/< \d+u\)/g)?.length ?? 0).padStart(3)} synthesised bound checks`);
-    runners.push({ bk, r: createRunner(ctx, pipeline, [a, b], m2, bk.key) });
+    runners.push({ bk, r: runner });
   }
   if (!runners.length) throw new Error("nothing compiled");
 
@@ -132,6 +147,13 @@ async function main() {
     write(`backends agree  bit-exact ${same} / ${got.length}` +
           (same === got.length ? `  <span class="ok">IDENTICAL</span>`
                                : `  <span class="bad">DIVERGENT</span>`));
+  }
+  if (outs.typegpu && outs.direct) {
+    const same = bitExactCount(outs.typegpu, outs.direct);
+    write(`TypeGPU agrees  bit-exact ${same} / ${got.length}` +
+          (same === got.length ? `  <span class="ok">IDENTICAL</span>`
+                               : `  <span class="bad">DIVERGENT — the adapter is binding ` +
+                                 `something differently</span>`));
   }
   write("");
 

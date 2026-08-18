@@ -235,10 +235,41 @@ direct measurement of the harness's own resolution: **identical work, measured
 twice, differs by one quantum.** Every other comparison on the page should be
 read against that floor. Recorded in `docs/002` §2a.
 
-## 8. What this does not settle
+## 8. Coverage: all three harness pages, all four kernels
+
+The adapter runs alongside the raw path everywhere, not just on the kernel it was
+written against:
+
+| page | kernel | bindings | why this one matters |
+|---|---|---|---|
+| `matmul.html` | 1024×768×512 aligned | 3 | the timing comparison — same WGSL, same dispatch, same timed code |
+| `ragged.html` | 1000×750×500 | 3 | **18 synthesised masks.** A swapped operand still produces plausible finite numbers in the tails rather than an obvious crash, so bit-identity against the raw path is the check with teeth |
+| `rowwise.html` | softmax, layernorm | **2** | the output binding is at index 1, not 2 — the case that would catch an adapter which only worked for the shape it was written against |
+
+`check-typegpu-layout.mjs` covers the same four statically (manifest ↔ emitted
+WGSL ↔ TypeGPU layout: index, group, element type, access mode, name).
+
+### One constructor, because three would rot
+
+The branch lives in `runners.js`, not in each page. Three copies of
+`if (runtime === "typegpu")` is the duplication this project spent a week
+removing from the emitter, and it would put the optional-dependency handling in
+three places as well — which is where it rots, because only one of the three gets
+read after a TypeGPU upgrade. Two structural tests hold the line, and both were
+falsified before being trusted:
+
+```
+createRunner called directly in a page   ✗ these pages build a runner by hand instead of via runners.js
+adapter dropped from one page            ✗ these pages do not exercise the TypeGPU adapter
+```
+
+## 9. What this does not settle
 
 Only the compute path is covered. Textures, samplers, vertex layouts, multiple
 bind groups and uniform buffers are all untouched, because tessera emits none of
 them. `d.arrayOf(d.f32, n)` is the only schema the adapter constructs, which is
 also the only thing tessera's bindings are today; a kernel taking an `i32` index
 buffer or a struct would need this widened.
+
+Nor is TypeGPU a dependency of the compiler. It is a dependency of the harness,
+behind `runners.js`, and every page still runs without it.
