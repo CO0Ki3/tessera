@@ -38,8 +38,9 @@
 <h1>tessera spike — baseline WGSL matmul</h1>
 <p class="sub">
   Tiled GEMM + fused ReLU, 1024&times;768&times;512, f32 &mdash; run twice:
-  <b>hand-written</b> WGSL, and WGSL <b>derived through MLIR</b>
-  (<code>mlir-opt</code> &rarr; SPIR-V &rarr; naga).<br>
+  <b>hand-written</b> WGSL, and WGSL <b>compiled by tessera</b> from
+  <code>examples/matmul.kernel.ts</code>
+  (tsc &rarr; IR &rarr; MLIR &rarr; SPIR-V &rarr; naga).<br>
   Both checked against an order-matched, <code>Math.fround</code>-exact CPU oracle,
   and against each other.
 </p>
@@ -108,11 +109,12 @@ async function main() {
   // ---- compile + run both kernels ------------------------------------------
   // Two implementations of the same kernel:
   //   hand   — spike/wgsl-baseline/matmul.wgsl, written by a person
-  //   mlir   — generated: TS-shaped MLIR -> mlir-opt -> SPIR-V -> naga -> WGSL
+  //   mlir   — compiled by tessera from examples/matmul.kernel.ts
   // If the compiler works, these agree bit for bit.
   const VARIANTS = [
     { key: "hand", file: "./matmul.wgsl", entry: "main", label: "hand-written" },
-    { key: "mlir", file: "./matmul-mlir.wgsl", entry: "matmul", label: "MLIR-derived" },
+    { key: "mlir", file: "./matmul-mlir.wgsl", entry: "matmul_relu_f32",
+      label: "tessera: TS \u2192 MLIR \u2192 WGSL" },
   ];
 
   const a = randomF32(M * K, 0x1234);

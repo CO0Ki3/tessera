@@ -19,13 +19,13 @@ var<private> _builtin_WorkgroupId_1: vec3<u32>;
 var<workgroup> _workgroup_mem_1_: type_5;
 var<workgroup> _workgroup_mem_0_: type_5;
 @group(0) @binding(0) 
-var<storage, read_write> matmul_arg_0_: type_8;
+var<storage, read_write> matmul_relu_f32_arg_0_: type_8;
 @group(0) @binding(1) 
-var<storage, read_write> matmul_arg_1_: type_11;
+var<storage, read_write> matmul_relu_f32_arg_1_: type_11;
 @group(0) @binding(2) 
-var<storage, read_write> matmul_arg_2_: type_14;
+var<storage, read_write> matmul_relu_f32_arg_2_: type_14;
 
-fn matmul_1() {
+fn matmul_relu_f32_1() {
     var local: f32;
     var local_1: f32;
     var local_2: f32;
@@ -154,7 +154,7 @@ fn matmul_1() {
                     break;
                 }
                 continuing {
-                    let _e119 = matmul_arg_0_.member[(((_e67 + (_e107 / 16u)) * 512u) + (_e70 + (_e107 % 16u)))];
+                    let _e119 = matmul_relu_f32_arg_0_.member[(((_e67 + (_e107 / 16u)) * 512u) + (_e70 + (_e107 % 16u)))];
                     _workgroup_mem_0_.member[_e107] = _e119;
                     phi_100_ = (_e107 + 256u);
                 }
@@ -168,7 +168,7 @@ fn matmul_1() {
                     break;
                 }
                 continuing {
-                    let _e136 = matmul_arg_1_.member[(((_e70 + (_e124 / 64u)) * 768u) + (_e68 + (_e124 % 64u)))];
+                    let _e136 = matmul_relu_f32_arg_1_.member[(((_e70 + (_e124 / 64u)) * 768u) + (_e68 + (_e124 % 64u)))];
                     _workgroup_mem_1_.member[_e124] = _e136;
                     phi_117_ = (_e124 + 256u);
                 }
@@ -343,31 +343,31 @@ fn matmul_1() {
     let _e287 = local_1;
     let _e288 = local;
     let _e290 = ((_e67 + _e65) * 768u);
-    matmul_arg_2_.member[(_e290 + (_e68 + _e66))] = select(0f, _e288, (_e288 > 0f));
-    matmul_arg_2_.member[(_e290 + (_e68 + (_e66 + 1u)))] = select(0f, _e287, (_e287 > 0f));
-    matmul_arg_2_.member[(_e290 + (_e68 + (_e66 + 2u)))] = select(0f, _e286, (_e286 > 0f));
-    matmul_arg_2_.member[(_e290 + (_e68 + (_e66 + 3u)))] = select(0f, _e285, (_e285 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e290 + (_e68 + _e66))] = select(0f, _e288, (_e288 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e290 + (_e68 + (_e66 + 1u)))] = select(0f, _e287, (_e287 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e290 + (_e68 + (_e66 + 2u)))] = select(0f, _e286, (_e286 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e290 + (_e68 + (_e66 + 3u)))] = select(0f, _e285, (_e285 > 0f));
     let _e320 = ((_e67 + (_e65 + 1u)) * 768u);
-    matmul_arg_2_.member[(_e320 + (_e68 + _e66))] = select(0f, _e284, (_e284 > 0f));
-    matmul_arg_2_.member[(_e320 + (_e68 + (_e66 + 1u)))] = select(0f, _e283, (_e283 > 0f));
-    matmul_arg_2_.member[(_e320 + (_e68 + (_e66 + 2u)))] = select(0f, _e282, (_e282 > 0f));
-    matmul_arg_2_.member[(_e320 + (_e68 + (_e66 + 3u)))] = select(0f, _e281, (_e281 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e320 + (_e68 + _e66))] = select(0f, _e284, (_e284 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e320 + (_e68 + (_e66 + 1u)))] = select(0f, _e283, (_e283 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e320 + (_e68 + (_e66 + 2u)))] = select(0f, _e282, (_e282 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e320 + (_e68 + (_e66 + 3u)))] = select(0f, _e281, (_e281 > 0f));
     let _e350 = ((_e67 + (_e65 + 2u)) * 768u);
-    matmul_arg_2_.member[(_e350 + (_e68 + _e66))] = select(0f, _e280, (_e280 > 0f));
-    matmul_arg_2_.member[(_e350 + (_e68 + (_e66 + 1u)))] = select(0f, _e279, (_e279 > 0f));
-    matmul_arg_2_.member[(_e350 + (_e68 + (_e66 + 2u)))] = select(0f, _e278, (_e278 > 0f));
-    matmul_arg_2_.member[(_e350 + (_e68 + (_e66 + 3u)))] = select(0f, _e277, (_e277 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e350 + (_e68 + _e66))] = select(0f, _e280, (_e280 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e350 + (_e68 + (_e66 + 1u)))] = select(0f, _e279, (_e279 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e350 + (_e68 + (_e66 + 2u)))] = select(0f, _e278, (_e278 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e350 + (_e68 + (_e66 + 3u)))] = select(0f, _e277, (_e277 > 0f));
     let _e380 = ((_e67 + (_e65 + 3u)) * 768u);
-    matmul_arg_2_.member[(_e380 + (_e68 + _e66))] = select(0f, _e276, (_e276 > 0f));
-    matmul_arg_2_.member[(_e380 + (_e68 + (_e66 + 1u)))] = select(0f, _e275, (_e275 > 0f));
-    matmul_arg_2_.member[(_e380 + (_e68 + (_e66 + 2u)))] = select(0f, _e274, (_e274 > 0f));
-    matmul_arg_2_.member[(_e380 + (_e68 + (_e66 + 3u)))] = select(0f, _e273, (_e273 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e380 + (_e68 + _e66))] = select(0f, _e276, (_e276 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e380 + (_e68 + (_e66 + 1u)))] = select(0f, _e275, (_e275 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e380 + (_e68 + (_e66 + 2u)))] = select(0f, _e274, (_e274 > 0f));
+    matmul_relu_f32_arg_2_.member[(_e380 + (_e68 + (_e66 + 3u)))] = select(0f, _e273, (_e273 > 0f));
     return;
 }
 
 @compute @workgroup_size(16, 16, 1) 
-fn matmul(@builtin(workgroup_id) _builtin_WorkgroupId: vec3<u32>, @builtin(local_invocation_id) _builtin_LocalInvocationId: vec3<u32>) {
+fn matmul_relu_f32_(@builtin(workgroup_id) _builtin_WorkgroupId: vec3<u32>, @builtin(local_invocation_id) _builtin_LocalInvocationId: vec3<u32>) {
     _builtin_WorkgroupId_1 = _builtin_WorkgroupId;
     _builtin_LocalInvocationId_1 = _builtin_LocalInvocationId;
-    matmul_1();
+    matmul_relu_f32_1();
 }
