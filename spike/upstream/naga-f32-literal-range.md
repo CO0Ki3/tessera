@@ -5,8 +5,34 @@
 - **Duplicate check**: nearest is #4568 `[glsl-out] Incorrect rounding for max-float
   constant expression`, which is a backend rounding issue, not front-end validation.
   No issue found on the accepted-range question.
-- **Status**: ready to file, not yet filed
+- **Status**: premise checked and holds; **one confirmation left** — see below
 - **Not verified**: which behaviour WGSL §15.7.6 mandates — see *Open question*.
+
+## Premise check (do this before the details, not after)
+
+The companion TypeGPU report was retracted because every verified detail sat on a
+premise nobody had tested: *does this project intend to support what I am doing?*
+Same question here, answered before filing:
+
+| | |
+|---|---|
+| Does naga claim to validate WGSL? | Yes — WGSL support is listed as *"Fully validated"* |
+| Is it a dev tool, or a real implementation? | *"It serves as the core of the WebGPU integration in **Firefox**, Servo, and Deno."* So naga's front-end validation **is** a browser's |
+| Do they aim at the spec? | Yes, and they run the CTS — while noting the implementation *"will likely differ from what is specified, as the implementation catches up"*, which is what makes a specific divergence worth naming rather than noise |
+
+So unlike the TypeGPU case the premise holds, and it holds harder than the
+original framing: this is not "a CLI disagrees with Chrome", it is potentially
+**Firefox and Chrome disagreeing about whether a shader compiles**.
+
+### The one thing still to confirm
+
+Everything below was measured against `naga-cli 30.0.0`. Firefox ships its own
+version of wgpu/naga, and that is what makes the interop claim real, so **open
+`spike/wgsl-baseline/f32-literal-check.html` in Firefox and in Chrome** before
+filing and paste both results into the issue. If Firefox accepts `3.4028235e38`
+and Chrome rejects it, the issue is about browser interop. If Firefox already
+rejects it, the divergence is confined to the CLI's release and the issue is
+smaller — still real, but it should say so.
 
 Everything between the markers is the issue body. The section after it is ours.
 
@@ -119,10 +145,23 @@ answer is settled — and the naga fix too, if it is this side.
 
 ### Why it is worth fixing rather than documenting
 
-This was found by a compiler that emits WGSL. The generated shader passed naga —
-57 occurrences of the literal, "Validation successful" — and failed only when it
-reached Chrome. A validator that accepts what the target rejects is worse than no
-validator at that step, because it converts a build-time error into a runtime one.
+Two reasons, and the second is the bigger one.
+
+**As a toolchain problem.** This was found by a compiler that emits WGSL. The
+generated shader passed naga — 57 occurrences of the literal, "Validation
+successful" — and failed only when it reached Chrome. A validator that accepts
+what the target rejects is worse than no validator at that step, because it turns
+a build-time error into a runtime one.
+
+**As an interop problem.** naga is the core of the WebGPU integration in Firefox,
+so this is not a tool disagreeing with a browser but two browsers potentially
+disagreeing about whether a shader compiles at all — for a literal that a
+generator has every reason to emit, since it is what "the f32 maximum" looks like
+when written as a decimal.
+
+`f32-literal-check.html` in this report's repo runs the five boundary cases
+through `createShaderModule` and prints what the current browser did, so both
+results can be pasted in rather than described.
 
 <!-- ──────────────────── END ISSUE BODY ───────────────────── -->
 

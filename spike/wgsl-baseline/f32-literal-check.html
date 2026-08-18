@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>f32 literal range: does this browser accept it?</title>
+<style>
+  body { font: 14px ui-monospace, Menlo, monospace; margin: 2rem; max-width: 60rem; }
+  td, th { padding: .2rem .8rem .2rem 0; text-align: left; vertical-align: top; }
+  .ok { color: #197f19 } .bad { color: #b00 } .dim { color: #777 }
+  pre { background: #f4f4f4; padding: .6rem; overflow-x: auto }
+</style>
+<h3>f32 literal range</h3>
+<p class="dim">
+  naga (Firefox, Servo, Deno) and Tint (Chrome) draw the upper bound of a float
+  literal in different places. naga accepts anything that <em>rounds</em> to a
+  finite f32; Tint accepts only values ≤ f32::MAX. Everything between those two
+  is accepted by one and rejected by the other — and that band contains
+  <code>3.4028235e38</code>, the decimal people write when they mean the f32
+  maximum.
+</p>
+<p class="dim">Open this in both browsers. See <code>spike/upstream/naga-f32-literal-range.md</code>.</p>
+<table id="t"><tr><th>literal<th>expect<th>this browser</table>
+<pre id="ua"></pre>
+<script type="module">
+const MAX  = "3.4028234663852886e38";   // f32::MAX exactly
+const MID  = "3.4028235677973366e38";   // midpoint between MAX and 2^128
+const CASES = [
+  [MAX,               "valid",   "the exact maximum"],
+  ["3.4028235e38",    "?",       "above MAX, rounds down to MAX — the disputed band"],
+  ["3.402823567e38",  "?",       "still just below the midpoint"],
+  [MID,               "invalid", "the midpoint — rounds to infinity"],
+  ["1e39",            "invalid", "far out of range"],
+];
+
+const ua = navigator.userAgent;
+document.getElementById("ua").textContent = ua;
+
+const adapter = await navigator.gpu?.requestAdapter();
+const device = await adapter?.requestDevice();
+const t = document.getElementById("t");
+
+for (const [lit, expect, note] of CASES) {
+  let verdict, cls;
+  if (!device) { verdict = "no WebGPU"; cls = "dim"; }
+  else {
+    const code = `@group(0) @binding(0) var<storage, read_write> o : array<f32>;
+@compute @workgroup_size(1) fn main() { o[0] = ${lit}; }`;
+    device.pushErrorScope("validation");
+    const mod = device.createShaderModule({ code });
+    const info = await mod.getCompilationInfo();
+    await device.popErrorScope();
+    const errs = info.messages.filter((m) => m.type === "error");
+    verdict = errs.length ? `rejected — ${errs[0].message.trim().split("\n")[0]}` : "ACCEPTED";
+    cls = errs.length ? "bad" : "ok";
+  }
+  const row = t.insertRow();
+  row.insertCell().innerHTML = `<code>${lit}</code><br><span class="dim">${note}</span>`;
+  row.insertCell().textContent = expect;
+  row.insertCell().innerHTML = `<span class="${cls}">${verdict}</span>`;
+}
+</script>
