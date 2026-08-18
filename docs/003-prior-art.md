@@ -9,7 +9,7 @@ Two research passes, the second correcting the first. The honest position:
 | | who did it first | what they did |
 |---|---|---|
 | Shape and tile size as **compile-time types** | CuTe / CUTLASS 3.x, Mojo, and the dependent-array line (Futhark, Accelerate, Idris) | `Shape`/`Stride` as `Int<N>` template types; `layout: Layout` as a comptime parameter |
-| **Raggedness derived from those types, driving generated masks** | **Mojo `LayoutTensor`** | `_tile_is_masked[layout, *tile_sizes]()` is evaluated at comptime, its result becomes part of the resulting type (`masked = Self.masked or _tile_is_masked[...]`), and the DRAM→SRAM staging copy branches on it: `comptime if is_masked:` emits the bounds-checked path |
+| **Raggedness derived from those types** | **Mojo `LayoutTensor`** | `_tile_is_masked[layout, *tile_sizes]()` at comptime (L185), threaded into the resulting type (L3244). Read directly 2026-08-18 — see the correction below |
 | **A transposed axis is a type error** | **Dex** (Google Research, 2021) | index sets are types: `for i:n. for j:m.` gives `i` and `j` distinct types even when `size n == size m` |
 | Deriving tiling, staging and tail handling from declared blocking | Halide (`split` + `TailStrategy::GuardWithIf`/`ShiftInwards`), TVM/TensorIR | roughly a decade ago — from schedule *values* rather than types, but done |
 | Generating WGSL boundary checks automatically | `tfjs-backend-webgpu`'s `matmul_packed_webgpu.ts`, vendored into onnxruntime-web | emits WGSL with out-of-range-returns-zero guards |
@@ -19,6 +19,25 @@ Two research passes, the second correcting the first. The honest position:
 **"The compiler writes your masks so you never do" is Mojo's line, not ours.** It was
 the most impressive-sounding claim in this project's pitch and it is the one most
 clearly taken. Leading with it invites exactly the comparison it loses.
+
+### Correction after reading the Mojo source directly
+
+The second research pass described Mojo as branching a generated copy on `masked`, which
+made it sound like tessera's clamp-and-select with a different spelling. Reading
+`layout_tensor.mojo` shows something more careful, and the difference matters:
+
+- Mojo's primary mechanism is **clipping the runtime shape** —
+  `shape_i = max(min(tile_sizes[i], cur_dim), 0)` (L3347) — so out-of-range elements are
+  never read. That needs no identity element at all.
+- The one data fill in 8717 lines is in the async staging copy:
+  `fill=Scalar[Self.dtype](0.0)` (L5708), hardcoded, with no parameter.
+
+So the claim "Mojo would compute a masked max wrongly" is **not supportable and should not
+be made** — clipped iteration is a legitimate answer to the same problem, and simply a
+different one from tessera's branchless substitute-an-identity. What survives is narrower
+and checkable: Mojo has no axis names (0 name-based shape accesses against 30 positional
+in that file), and nothing anywhere asks the author to name what an out-of-range lane
+reads.
 
 ## 2. What is ours, as far as anything checked can tell
 

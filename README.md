@@ -57,25 +57,68 @@ oracle — 786432/786432 and 750000/750000 — with the ragged tails included.
 
 ## Related work
 
-The type-driven derivation is not new, and this project does not claim it.
+The type-driven derivation is not new, and this project does not claim it. What follows
+was checked by reading the sources, not by recalling them.
 
-- **Mojo `LayoutTensor`** derives maskedness from a comptime `layout` parameter
-  (`_tile_is_masked[layout, *tile_sizes]()`), threads it into the resulting type, and
-  branches the shared-memory staging copy on it. That is the derivation half, shipped.
+**Mojo's `LayoutTensor`** ([`max/kernels/src/layout/layout_tensor.mojo`](https://github.com/modular/modular/blob/main/max/kernels/src/layout/layout_tensor.mojo),
+8717 lines, read 2026-08-18) already derives maskedness from compile-time layout:
+
+```mojo
+struct LayoutTensor[..., layout: Layout, ..., masked: Bool = False, ...]
+
+def _tile_is_masked[layout: Layout, *tile_sizes: Int]() -> Bool:   # L185
+    comptime for axis in range(layout.rank()):
+        comptime if product(layout.shape[axis]) % tile_sizes[axis] != 0:
+            return True
+
+masked = Self.masked or _tile_is_masked[Self.layout, *tile_sizes]()   # L3244
+```
+
+So "the tile size is a compile-time parameter, raggedness is derived from it, and the
+result becomes part of the type" is shipped, in production, and predates this. Its
+handling is also more careful than a summary suggests: the primary mechanism is
+**clipping the runtime shape** so out-of-range elements are never read at all —
+
+```mojo
+var shape_i = max(min(tile_sizes[i], cur_dim), 0)   # L3347
+```
+
+— which needs no identity element, because nothing out of range is touched. tessera made
+the other choice: read out of range and substitute a named identity, so the guard is
+branchless. Both are defensible; neither is a fix for the other.
+
+Two things are absent from that file, and they are what tessera adds:
+
+- **Axis identity.** `Layout` is a positional `IntTuple` in the CuTe lineage — the code
+  indexes `layout.shape[axis]` over `range(layout.rank())`. Grepping 8717 lines for a
+  name-based axis access returns **zero** against 30 positional ones. A transposed
+  coordinate is legal there, and a compile error here.
+- **The identity element as an obligation.** `masked` is one `Bool` for a whole tensor,
+  not a per-axis fact, and the single data fill in the file is hardcoded —
+  `fill=Scalar[Self.dtype](0.0)` (L5708) — with no parameter to change it. Nothing asks
+  the author what an out-of-range lane should read. In tessera the operator demands it:
+  `rowMax` takes `"exact" | "negInf"`, so `.pad(zero)` into a max does not compile.
+
+Also relevant, and also not ours:
+
 - **CUTLASS 3.x / CuTe** carries shapes and strides as static template types and derives
-  thread-value partitioning from them — but has the kernel author build the predicate
-  tensor by hand.
-- **Dex** (2021) made index sets types, so two axes of equal size are still distinct types.
-  That is the axis-identity half, years earlier.
+  thread-value partitioning from them — but its own `0y_predication.md` walks the author
+  through hand-building a predicate tensor.
+- **Dex** (2021) made index sets types, so two axes of equal size are still distinct
+  types. That is the axis-identity half, years earlier, in a non-GPU array language.
 - **Halide** (`TailStrategy`) and **TVM/TensorIR** have derived tiling, staging and tail
-  predication for about a decade, from schedule values rather than from types.
+  predication for about a decade — from schedule values rather than from types.
+- **`tfjs-backend-webgpu`** already generates WGSL with out-of-range guards; the narrow
+  claim is not "generated guards in TS" but "guards driven by shapes the user declared as
+  types".
 - **TypeGPU** is the typed-resource layer for WebGPU in TypeScript and is better at that
-  job than anything here; if you want typed buffers and a shader body in TS, use it.
+  job than anything here. If you want typed buffers and a shader body in TS, use it — its
+  TS→WGSL path is a faithful transliteration, so the masks stay yours to write.
 
-What tessera puts together: axis identity *and* the ragged identity element as
-obligations inside the same type that drives the derivation, on a TypeScript/WGSL
-substrate. See [`docs/003-prior-art.md`](docs/003-prior-art.md), including what that
-research did not look at.
+What tessera puts together: **axis identity and the ragged identity element as obligations
+inside the same type that drives the derivation**, on a TypeScript/WGSL substrate. See
+[`docs/003-prior-art.md`](docs/003-prior-art.md), including what that research did not look
+at — no academic search was run, and CubeCL was never reached.
 
 ## Scope principles
 
