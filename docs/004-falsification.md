@@ -555,11 +555,13 @@ accumulate slice rather than once per fragment cell — the old emitter re-read 
 same row four times per block, which the unification removed without anyone
 aiming at it.
 
-**Cost: two quanta.** The direct backend went 6q → 8q, still 87.5% of the
-hand-written kernel and still inside the 80% invariant. One emitter that derives
-its schedule is slightly slower than two shaped by hand. That is the trade, and it
-is worth stating plainly since the whole argument of this document is that the
-derivation generalises — it generalises, and it is not free.
+**Cost: none, after two codegen fixes.** The unification first cost two quanta
+(6q → 8q); comparing the generated inner loop against the hand-written one found a
+cancelling `ci - cb` in every staged read and a loop-invariant address recomputed
+per step. Both removed, the direct backend is back to **6q** — at parity with the
+hand-written kernel, inside one quantum. The derivation generalises, and it turned
+out to be free; see docs/002 §6b, including why the same class of fix was worth
+1.00× on the other backend.
 
 **So R10 was wrong twice over.** It said the split was honest and that unifying it
 needed a contraction abstraction rather than a refactor. The abstraction was real;

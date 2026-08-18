@@ -110,7 +110,7 @@ Full accounting, including what three research passes could not look at and why,
 
 | | |
 |---|---|
-| `examples/matmul.kernel.ts` | 1024x768x512, bit-identical to a hand-written WGSL kernel, at parity on throughput |
+| `examples/matmul.kernel.ts` | 1024x768x512, bit-identical to a hand-written WGSL kernel and at parity on throughput (6 quanta against 7, inside one) |
 | `examples/matmul-ragged.kernel.ts` | 1000x750x500, no axis dividing its block, 750000/750000 bit-exact |
 | `examples/softmax.kernel.ts` | a second kernel family, 1024x750 with a ragged reduction axis, every row normalised and within 6 ULP |
 | backends | direct WGSL (default) and MLIR (`--backend=mlir`), bit-identical to each other |

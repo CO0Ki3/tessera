@@ -1,7 +1,8 @@
 # 002 — Performance: the invariant, what is ruled out, and the plan
 
-Status: **invariant met** by the direct backend (117% of hand-written); the MLIR
-path remains at 64% and is no longer the default
+Status: **invariant met.** The direct backend is at parity with the hand-written
+kernel — 6 quanta against 7, inside one quantum, so "indistinguishable" rather than
+"faster". The MLIR path remains at 64% and is no longer the default.
 Measurement: `spike/wgsl-baseline/measure.js`
 
 ## 1. Why this is not optional
@@ -184,8 +185,8 @@ WGSL was pushed through naga and back — `wgsl → spv → wgsl` — with MLIR 
 of the picture:
 
 ```
-tessera direct                    8q
-probe D: direct, naga round-trip  13q      1.63x
+tessera direct                     6q
+probe D: direct, naga round-trip  13q      2.17x
 ```
 
 The round-trip acquires naga's `loop {} continuing {}` form and **not** the 144 phi
