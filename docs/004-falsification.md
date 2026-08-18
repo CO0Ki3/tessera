@@ -482,5 +482,16 @@ The scale is a property of the operations in the kernel. Choosing it correctly i
 same as loosening a tolerance until the test passes, and the difference between those two
 is whether you can say in advance which one applies.
 
-With the right scale: `1.6e-9` against a bound of `8 * 2^-24 * 1.888 = 9.0e-7` — inside by
-a factor of about 550.
+With the right scale, measured on hardware:
+
+```
+softmax    41.37% bit-exact   max 6 ULP        maxAbsDiff 1.16e-9   PASS
+layernorm  61.71% bit-exact   max 1783 ULP     maxAbsDiff 3.58e-7   PASS
+                              3.2 ULP at a scale of 1.888, bound 9.00e-7
+```
+
+A correction to an earlier draft of this line: it claimed a margin of about 550×, computed
+from the absolute difference at the worst-*ULP* element (1.6e-9) rather than at the worst-
+*absolute* one (3.58e-7). The real margin is **2.5×** — comfortable, and the kernel uses
+about 40% of an 8-ULP budget. The 8 is a choice; it should be revisited if a kernel ever
+sits near it rather than being quietly widened.
