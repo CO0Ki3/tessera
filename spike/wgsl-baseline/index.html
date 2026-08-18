@@ -131,6 +131,12 @@ async function main() {
     // per iteration to 9. This is the before.
     { key: "mlirNoOpt", file: "./probe-tessera-noopt.wgsl", manifest: "./matmul-mlir.json",
       probe: true, label: "probe B: tessera, --no-opt" },
+    // Probe C: the reduction-block loop fully unrolled in the emitter. Both
+    // kernels have a `for k in 0..bk` at source level, but naga lowers tessera's
+    // into loop{}/continuing{} with phi variables. If that structure is what
+    // costs the 1.57x, removing the loop should close it.
+    { key: "mlirUnroll", file: "./probe-tessera-unroll.wgsl", manifest: "./matmul-mlir.json",
+      probe: true, label: "probe C: tessera, k-loop unrolled" },
   ];
 
   const a = randomF32(M * K, 0x1234);
@@ -209,6 +215,13 @@ async function main() {
     write(`canonicalize+cse+licm bought   ${f(q("mlirNoOpt") / q("mlir"), 2)}x   ` +
           `<span class="dim">(${q("mlirNoOpt")}q → ${q("mlir")}q, ${d >= 0 ? "+" : ""}${d}q)</span>`);
   }
+  if (q("mlirUnroll") && q("mlir")) {
+    write(`unrolling the k loop bought    ${f(q("mlir") / q("mlirUnroll"), 2)}x   ` +
+          `<span class="dim">(${q("mlir")}q → ${q("mlirUnroll")}q)</span>`);
+    if (q("hand")) {
+      write(`  unrolled vs hand-written     ${f(q("mlirUnroll") / q("hand"), 2)}x`);
+    }
+  }
   if (q("hand") && q("handRW")) {
     write(`hand: read → read_write        ${f(q("handRW") / q("hand"), 2)}x`);
   }
@@ -230,7 +243,7 @@ async function main() {
           (same === results.hand.length
             ? `  <span class="ok">IDENTICAL</span>` : `  <span class="bad">DIVERGENT</span>`));
   }
-  for (const k of ["handRW", "mlirRO", "mlirNoOpt"]) {
+  for (const k of ["handRW", "mlirRO", "mlirNoOpt", "mlirUnroll"]) {
     if (!results[k]) continue;
     const base = k === "handRW" ? results.hand : results.mlir;
     const same = bitExactCount(results[k], base);

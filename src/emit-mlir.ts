@@ -25,7 +25,23 @@ import type { KernelIR } from "./ir.ts";
 const SC = "#spirv.storage_class<StorageBuffer>";
 const WG = "#spirv.storage_class<Workgroup>";
 
-export function emitMLIR(k: KernelIR): string {
+export interface EmitOptions {
+  /**
+   * Fully unroll the reduction-block loop (trip count = tile.bk, a literal).
+   *
+   * This is a codegen decision, not an optimisation: the emitter already writes
+   * out the TM*TN fragment as straight-line FMAs, and the bk loop is the same
+   * kind of statically-known bound. It exists because of a measured difference —
+   * the hand-written WGSL and tessera's both have a `for k in 0..bk` at source
+   * level, but naga lowers tessera's to `loop {} continuing {}` with phi
+   * variables, and the two are not equally optimisable downstream. Unrolling
+   * here removes 16 loop-carried values and one loop level, so it tests whether
+   * that structure is what costs the measured 1.57x.
+   */
+  unrollK?: boolean;
+}
+
+export function emitMLIR(k: KernelIR, opts: EmitOptions = {}): string {
   const { bm, bn, bk } = k.tile;
   const [wgx, wgy] = k.workgroup;
   const [tm, tn] = k.fragment;
@@ -115,36 +131,76 @@ export function emitMLIR(k: KernelIR): string {
   B(`gpu.barrier`, 4);
 
   // ---- inner accumulate ----------------------------------------------------
-  B(`%acc:${nacc} = scf.for %k = %c0 to %c${bk} step %c1 ` +
-    `iter_args(${accs.map((_, i) => `%i${i} = ${accs[i]}`).join(", ")}) -> (${types}) {`, 4);
+  // Emitted either as a loop over bk, or fully unrolled. See EmitOptions.
+  let finalAcc: string[];
 
-  for (let m = 0; m < tm; m++) {
-    B(`%am${m}a = arith.addi %ty4, %c${m} : index`, 5);
-    B(`%am${m}b = arith.muli %am${m}a, %c${bk} : index`, 5);
-    B(`%am${m}c = arith.addi %am${m}b, %k : index`, 5);
-    B(`%af${m} = memref.load %As[%am${m}c] : memref<${bm * bk}x${ty}, ${WG}>`, 5);
-  }
-  for (let n = 0; n < tn; n++) {
-    B(`%bn${n}a = arith.muli %k, %c${bn} : index`, 5);
-    B(`%bn${n}b = arith.addi %tx4, %c${n} : index`, 5);
-    B(`%bn${n}c = arith.addi %bn${n}a, %bn${n}b : index`, 5);
-    B(`%bf${n} = memref.load %Bs[%bn${n}c] : memref<${bk * bn}x${ty}, ${WG}>`, 5);
-  }
+  if (opts.unrollK) {
+    // Needs the literal step indices as constants.
+    const extra = new Set<number>();
+    for (let s = 0; s < bk; s++) extra.add(s);
+    const missing = [...extra].filter((v) => !needed.has(v)).sort((x, y) => x - y);
+    for (const v of missing) B(`%ck${v} = arith.constant ${v} : index`, 4);
+    const kconst = (s: number) => (needed.has(s) ? `%c${s}` : `%ck${s}`);
 
-  const yields: string[] = [];
-  for (let m = 0; m < tm; m++) {
-    for (let n = 0; n < tn; n++) {
-      const i = m * tn + n;
-      B(`%p${i} = arith.mulf %af${m}, %bf${n} : ${ty}`, 5);
-      B(`%s${i} = arith.addf %i${i}, %p${i} : ${ty}`, 5);
-      yields.push(`%s${i}`);
+    let cur = [...accs];
+    for (let s = 0; s < bk; s++) {
+      for (let m = 0; m < tm; m++) {
+        B(`%u${s}am${m}a = arith.addi %ty4, %c${m} : index`, 4);
+        B(`%u${s}am${m}b = arith.muli %u${s}am${m}a, %c${bk} : index`, 4);
+        B(`%u${s}am${m}c = arith.addi %u${s}am${m}b, ${kconst(s)} : index`, 4);
+        B(`%u${s}af${m} = memref.load %As[%u${s}am${m}c] : memref<${bm * bk}x${ty}, ${WG}>`, 4);
+      }
+      for (let n = 0; n < tn; n++) {
+        B(`%u${s}bn${n}a = arith.muli ${kconst(s)}, %c${bn} : index`, 4);
+        B(`%u${s}bn${n}b = arith.addi %tx4, %c${n} : index`, 4);
+        B(`%u${s}bn${n}c = arith.addi %u${s}bn${n}a, %u${s}bn${n}b : index`, 4);
+        B(`%u${s}bf${n} = memref.load %Bs[%u${s}bn${n}c] : memref<${bk * bn}x${ty}, ${WG}>`, 4);
+      }
+      const next: string[] = [];
+      for (let m = 0; m < tm; m++) {
+        for (let n = 0; n < tn; n++) {
+          const i = m * tn + n;
+          B(`%u${s}p${i} = arith.mulf %u${s}af${m}, %u${s}bf${n} : ${ty}`, 4);
+          B(`%u${s}s${i} = arith.addf ${cur[i]}, %u${s}p${i} : ${ty}`, 4);
+          next.push(`%u${s}s${i}`);
+        }
+      }
+      cur = next;
     }
+    finalAcc = cur;
+  } else {
+    B(`%acc:${nacc} = scf.for %k = %c0 to %c${bk} step %c1 ` +
+      `iter_args(${accs.map((_, i) => `%i${i} = ${accs[i]}`).join(", ")}) -> (${types}) {`, 4);
+
+    for (let m = 0; m < tm; m++) {
+      B(`%am${m}a = arith.addi %ty4, %c${m} : index`, 5);
+      B(`%am${m}b = arith.muli %am${m}a, %c${bk} : index`, 5);
+      B(`%am${m}c = arith.addi %am${m}b, %k : index`, 5);
+      B(`%af${m} = memref.load %As[%am${m}c] : memref<${bm * bk}x${ty}, ${WG}>`, 5);
+    }
+    for (let n = 0; n < tn; n++) {
+      B(`%bn${n}a = arith.muli %k, %c${bn} : index`, 5);
+      B(`%bn${n}b = arith.addi %tx4, %c${n} : index`, 5);
+      B(`%bn${n}c = arith.addi %bn${n}a, %bn${n}b : index`, 5);
+      B(`%bf${n} = memref.load %Bs[%bn${n}c] : memref<${bk * bn}x${ty}, ${WG}>`, 5);
+    }
+
+    const yields: string[] = [];
+    for (let m = 0; m < tm; m++) {
+      for (let n = 0; n < tn; n++) {
+        const i = m * tn + n;
+        B(`%p${i} = arith.mulf %af${m}, %bf${n} : ${ty}`, 5);
+        B(`%s${i} = arith.addf %i${i}, %p${i} : ${ty}`, 5);
+        yields.push(`%s${i}`);
+      }
+    }
+    B(`scf.yield ${yields.join(", ")} : ${types}`, 5);
+    B(`}`, 4);
+    finalAcc = accs.map((_, i) => `%acc#${i}`);
   }
-  B(`scf.yield ${yields.join(", ")} : ${types}`, 5);
-  B(`}`, 4);
 
   B(`gpu.barrier`, 4);
-  B(`scf.yield ${accs.map((_, i) => `%acc#${i}`).join(", ")} : ${types}`, 4);
+  B(`scf.yield ${finalAcc.join(", ")} : ${types}`, 4);
   B(`}`, 3);
   B();
 

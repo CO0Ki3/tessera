@@ -207,47 +207,52 @@ unstructured `loop`/`continuing` with `phi_` variables, and Tint has to
 re-structurize it — 374 lines against 118 for the same kernel. On a
 compile-in-the-browser story that cost is on the critical path.
 
-**Runtime: unknown, and the attempt to establish it is the more useful finding.**
+### Runtime: 1.57x slower, cause unknown, three hypotheses refuted
 
-An earlier revision of this file claimed the gap was ~1.5–1.6×, "established by
-paired within-run comparison". **That claim was wrong and is retracted.** The
-reasoning behind it — that two kernels run back to back share clock and thermal
-state, so a paired comparison controls for drift — does not hold. A later session
-produced this, in run order:
+An earlier revision claimed ~1.5–1.6x from paired single-dispatch samples, then
+**retracted** it when a third session measured 1.00x and the same unoptimised
+shader came in at 45q and 22q on different days. The retraction was right: the
+method could not support the claim.
+
+With `measure.js` — warm up, repeat 25x, interleave round-robin, report the
+minimum — the number is stable and reproducible across sessions:
 
 ```
-hand-written              read         27q
-tessera        optimised  read_write   27q
-hand-written              read_write   10q
-tessera        optimised  read         19q
-tessera        --no-opt   read_write   22q
+  kernel                                min   med   max   spread   GFLOP/s
+  hand-written                            7     7     8        1    1755.4
+  tessera: TS -> MLIR -> WGSL            11    11    12        1    1117.1
 ```
 
-which reads as "making the hand kernel worse made it 2.7× faster". It did not.
-And the same unoptimised shader measured **45q in one session and 22q in
-another** — a 2× spread on identical code. Position in the dispatch sequence
-moved the numbers more than the kernels did, because the GPU ramps its clocks as
-work arrives. The two paired samples that had agreed (1.61× and 1.50×) were a
-coincidence of two samples; a third refuted them at 1.00×.
+Non-overlapping intervals, spread of one quantum, identical across runs. **1.57x
+is real.** Note also that everything got ~4x faster than the old numbers: those
+were all measuring a cold GPU.
 
-What the method was missing, all of which `measure.js` now does:
+**Three hypotheses, all refuted:**
 
-- **warm-up** — the first dispatches run at a low clock state
-- **repetition** — one sample per kernel measures the machine, not the kernel
-- **interleaving** — running all of A then all of B lets drift masquerade as a
-  difference between A and B; round-robin spreads it evenly
-- **minimum, not mean** — for fixed work the noise is one-sided, so the floor
-  converges on the kernel while the average tracks how busy the machine was
+| # | hypothesis | probe | result |
+|---|---|---|---|
+| A | storage access mode — naga emits `read_write` for inputs the surface knows are `read`; Metal maps read-only to `const device` | two-sided: force the hand kernel to `read_write`, mark tessera's to `read` | **1.00x both ways** |
+| B | integer ALU work — the emitter recomputed loop-invariant indices, 24 ops per inner iteration | `--no-opt` vs canonicalize+cse+licm, which cuts it to 9 | **1.00x** |
+| C | unstructured control flow — naga lowers `for k` into `loop{}/continuing{}` with 144 phi variables, where the hand kernel has a plain `for` | `--unroll`, removing the loop entirely (phi 144 -> 76, one fewer loop) | **0.73x — worse** |
 
-The ecosystem research picked a measurement layer as the highest-leverage support
-project, on the grounds that "the default state of the world is that you will
-measure wrong and confidently ship the wrong codegen". This spike did exactly
-that, in writing, and then had to retract it. The correction is cheap; believing
-the first number would not have been.
+C deserves comment: unrolling made it *slower*, and the SPIR-V grew 8.1 KB ->
+24.5 KB. Whatever the loop costs, materialising 16 copies of the body costs more
+— register pressure and instruction footprint are the obvious suspects. So the
+loop structure is not simply a tax to be removed.
 
-**What is not in doubt:** correctness. Every session, without exception, has
-reported the MLIR-derived kernel bit-identical to the hand-written one,
-786432 / 786432, maxAbsDiff 0.
+**B is worth keeping despite buying nothing.** It shrinks the SPIR-V by 600 bytes
+and cannot hurt. It should just no longer be described as a performance measure.
+
+**What this means for method.** Three WGSL-level hypotheses produced three
+refutations. That is the signal to stop guessing at this level: the next step
+needs a different instrument, not a fourth guess. The instrument is the generated
+MSL — Chrome can be launched with Dawn's shader-dump flag to show what Tint
+actually produced for each kernel, which turns "why is it slower" from inference
+into reading.
+
+Not chased further for now, because 1.57x on a kernel neither side has tuned is
+not a project-threatening number, and the ragged-axis demo — the thing that
+actually demonstrates the project's thesis — is untouched.
 
 ### Decision table, as originally written
 

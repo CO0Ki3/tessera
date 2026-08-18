@@ -208,14 +208,16 @@ Two costs are now on the record, and only one of them is established:
   `phi_` variables (374 lines against 118) and Tint must re-structurize it. On a
   compile-in-the-browser story this is on the critical path, and it is a robust
   signal rather than measurement noise.
-- **Runtime is unknown.** An earlier revision of this section claimed ~1.5–1.6×
-  slower, "established by paired within-run comparison". **Retracted.** A later
-  session measured the two kernels at 1.00×, and the same unoptimised shader at
-  45q and 22q in different sessions — a 2× spread on identical code. GPU clock
-  ramping moves the numbers more than the kernels do, so position in the dispatch
-  sequence was being read as a property of the code. `spike/wgsl-baseline/
-  measure.js` now warms up, repeats, interleaves, and reports the minimum; no
-  performance claim should be made from anything weaker.
+- **Runtime is 1.57x slower, cause unknown.** With a proper measurement
+  (`spike/wgsl-baseline/measure.js`: warm up, 25 interleaved repetitions, report
+  the minimum) the figure is stable and reproducible: hand 7 quanta, tessera 11,
+  spread 1, non-overlapping. Three hypotheses were tested and all refuted —
+  storage access mode (1.00x both ways), integer ALU work from loop-invariant
+  index recomputation (1.00x), and unstructured control flow with 144 phi
+  variables (unrolling made it 0.73x, i.e. *worse*). Further progress needs the
+  generated MSL rather than a fourth guess at the WGSL level. Parked: 1.57x on an
+  untuned kernel is not project-threatening, and it is not worth delaying the
+  ragged-axis demo for.
 
 A third consequence: the direct WGSL printer scoped as week-4 insurance keeps its
 value regardless, now as the *third oracle*. With the MLIR path bit-exact today,

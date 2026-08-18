@@ -83,7 +83,7 @@ function main(): void {
 
   // ---- MLIR --------------------------------------------------------------
   console.log(`\n── emit ───────────────────────────────────────────`);
-  const mlir = emitMLIR(ir);
+  const mlir = emitMLIR(ir, { unrollK: args.includes("--unroll") });
   writeFileSync(at(".mlir"), mlir);
   console.log(`  ${at(".mlir")}  ${mlir.split("\n").length} lines`);
 
