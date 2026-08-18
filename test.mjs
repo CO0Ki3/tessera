@@ -54,6 +54,19 @@ if (!built.ok) {
   const ref = norm(readFileSync("spike/mlir-spirv/l3/matmul.mlir", "utf8"));
   const got = norm(readFileSync(join(out, "matmul_relu_f32.mlir"), "utf8"));
 
+  // The WGSL entry point is not necessarily spec.name — naga renames anything
+  // ending in a reserved word. A host that trusts spec.name fails at pipeline
+  // creation with "Entry point ... doesn't exist", which is what happened once.
+  const man = JSON.parse(readFileSync(join(out, "matmul_relu_f32.json"), "utf8"));
+  const wgsl = readFileSync(join(out, "matmul_relu_f32.wgsl"), "utf8");
+  const declared = wgsl.match(/@compute[^\n]*\n\s*fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1];
+  if (declared && man.entryPoint === declared) {
+    ok(`manifest entryPoint "${man.entryPoint}" matches the WGSL` +
+       (man.entryPoint !== man.name ? ` (naga renamed it from "${man.name}")` : ""));
+  } else {
+    bad(`manifest says entryPoint "${man.entryPoint}" but the WGSL declares "${declared}"`);
+  }
+
   if (ref === got) {
     ok(`MLIR byte-identical to the verified reference (${got.split("\n").length} lines)`);
   } else {

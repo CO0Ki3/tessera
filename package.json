@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsx src/cli.ts",
     "check": "tsc --noEmit -p tsconfig.json",
-    "demo": "npx tsx src/cli.ts build examples/matmul.kernel.ts -o build && cp build/matmul_relu_f32.wgsl spike/wgsl-baseline/matmul-mlir.wgsl && echo '-> spike/wgsl-baseline/matmul-mlir.wgsl (serve that dir and reload)'",
+    "demo": "npx tsx src/cli.ts build examples/matmul.kernel.ts -o build && cp build/matmul_relu_f32.wgsl spike/wgsl-baseline/matmul-mlir.wgsl && cp build/matmul_relu_f32.json spike/wgsl-baseline/matmul-mlir.json && echo '-> spike/wgsl-baseline/ updated; reload the page'",
     "test": "node test.mjs"
   },
   "devDependencies": {

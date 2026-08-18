@@ -114,7 +114,41 @@ function main(): void {
   run("naga", [at(".spv"), at(".wgsl")]);
   const wgsl = readFileSync(at(".wgsl"), "utf8");
   console.log(`  naga        ✓ ${at(".wgsl")}  ${wgsl.split("\n").length} lines`);
-  console.log(`\n  entry point: ${ir.name}   @workgroup_size(${ir.workgroup.join(", ")})`);
+
+  // The WGSL entry point is NOT necessarily spec.name. naga renames anything
+  // that would collide with a reserved word — measured: a name ENDING in a type
+  // keyword gets a trailing underscore (`matmul_relu_f32` -> `matmul_relu_f32_`,
+  // `gemm_f32` -> `gemm_f32_`), while `f32_thing` is left alone. That is
+  // legitimate behaviour for a translator, so the fix is on our side: read the
+  // real name back rather than assuming it, and hand it to the host in a
+  // manifest. A host that hardcodes spec.name gets
+  // "Entry point ... doesn't exist in the shader module" at pipeline creation.
+  const m = wgsl.match(/@compute[^\n]*\n\s*fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+  if (!m) throw new Error(`no @compute entry point found in ${at(".wgsl")}`);
+  const entryPoint = m[1];
+
+  const manifest = {
+    name: ir.name,
+    entryPoint,
+    dtype: ir.dtype,
+    workgroup: ir.workgroup,
+    dispatch: ir.dispatch,
+    fragment: ir.fragment,
+    workgroupBytes: ir.workgroupBytes,
+    axes: Object.fromEntries([...ir.grid, ...ir.reduce].map((a) => [a.name, a.extent])),
+    bindings: ir.bindings.map((b, i) => ({
+      name: b.name, binding: i, group: 0, mode: b.mode, elements: b.elements, axes: b.axes,
+    })),
+    maskedLoads: [] as string[],
+  };
+  writeFileSync(at(".json"), JSON.stringify(manifest, null, 2) + "\n");
+  console.log(`  manifest    ✓ ${at(".json")}`);
+
+  console.log(`\n  entry point: ${entryPoint}   @workgroup_size(${ir.workgroup.join(", ")})`);
+  if (entryPoint !== ir.name) {
+    console.log(`  \x1b[33mnote\x1b[0m  naga renamed "${ir.name}" -> "${entryPoint}" ` +
+                `(reserved-word avoidance). Use the manifest, not spec.name.`);
+  }
 }
 
 try {

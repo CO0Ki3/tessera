@@ -208,10 +208,14 @@ Two costs are now on the record, and only one of them is established:
   `phi_` variables (374 lines against 118) and Tint must re-structurize it. On a
   compile-in-the-browser story this is on the critical path, and it is a robust
   signal rather than measurement noise.
-- **Runtime is not yet measurable.** The numbers suggest ~1.6× slower, but §4a's
-  companion finding — two runs of an identical kernel differing by 55% — means a
-  single-dispatch comparison between implementations proves nothing. This needs a
-  measurement layer before it can be argued about.
+- **Runtime is ~1.5–1.6× slower**, established by paired within-run comparison
+  after working out what the timings actually are. Chrome quantizes
+  `timestamp-query` to **2^16 ns = 65.536 µs** — every one of eight samples across
+  four sessions is an exact multiple — so that is the resolution floor. Both
+  paired observations (17 and 8 quanta apart, far outside ±1 quantum) agree:
+  1.61× and 1.50×. The cause is not established; naga's unstructured
+  `loop`/`continuing` output is the first suspect. Not urgent while both sides
+  are untuned, but no longer an unknown.
 
 A third consequence: the direct WGSL printer scoped as week-4 insurance keeps its
 value regardless, now as the *third oracle*. With the MLIR path bit-exact today,

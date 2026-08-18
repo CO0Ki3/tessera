@@ -207,12 +207,47 @@ unstructured `loop`/`continuing` with `phi_` variables, and Tint has to
 re-structurize it — 374 lines against 118 for the same kernel. On a
 compile-in-the-browser story that cost is on the critical path.
 
-**Runtime: do not conclude anything yet.** The numbers suggest ~1.6× slower, but
-this spike already documented two runs of an *identical* kernel disagreeing by
-55% (1.311 ms vs 2.032 ms), so a single-dispatch comparison between two
-implementations is not evidence. Settling this needs the measurement layer, not
-another eyeball. Noting it here rather than acting on it is the discipline the
-earlier finding demanded.
+**Runtime: ~1.5–1.6× slower, and this now survives scrutiny.** An earlier
+revision of this file said the gap was not measurable. That was too conservative,
+and working out why produced the more useful finding.
+
+Chrome quantizes `timestamp-query` results. Every GPU timing this harness has
+produced — eight samples across four sessions — is an **exact multiple of
+2^16 ns = 65.536 µs**:
+
+```
+printed ms   ns        quanta
+     1.311   1310720       20
+     2.032   2031616       31
+     1.901   1900544       29
+     2.949   2949120       45
+     1.835   1835008       28
+     1.769   1769472       27
+     1.573   1572864       24
+     1.049   1048576       16
+```
+
+Eight for eight is not coincidence. So the resolution floor is 65.536 µs, not
+whatever precision the printed milliseconds imply, and the documented "55%
+variance between identical runs" was genuine variance rather than quantization
+noise.
+
+That reframes the comparison rather than invalidating it. Both kernels run back
+to back inside one session, so a **paired** comparison controls for clock and
+thermal state in a way cross-session numbers cannot — and both paired
+observations agree:
+
+```
+hand 28q vs tessera 45q   = 1.61x
+hand 16q vs tessera 24q   = 1.50x
+```
+
+Separations of 17 and 8 quanta are far outside ±1 quantum, so the gap is real at
+this resolution. What is *not* established is why, or whether it survives tuning:
+plausible causes are naga's unstructured `loop`/`continuing` output defeating
+some optimisation Tint would otherwise apply, or the extra `bitcast<i32>`
+comparisons in the generated loop bounds. Both are investigable, neither is
+urgent while the kernel is untuned on both sides.
 
 ### Decision table, as originally written
 

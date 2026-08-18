@@ -111,15 +111,19 @@ async function main() {
   //   hand   — spike/wgsl-baseline/matmul.wgsl, written by a person
   //   mlir   — compiled by tessera from examples/matmul.kernel.ts
   // If the compiler works, these agree bit for bit.
+  // The tessera variant carries no hardcoded entry point: `tessera build` writes
+  // a manifest, because the WGSL entry point is not necessarily spec.name \u2014 naga
+  // renames anything ending in a reserved word (matmul_relu_f32 -> ..._).
   const VARIANTS = [
     { key: "hand", file: "./matmul.wgsl", entry: "main", label: "hand-written" },
-    { key: "mlir", file: "./matmul-mlir.wgsl", entry: "matmul_relu_f32",
+    { key: "mlir", file: "./matmul-mlir.wgsl", manifest: "./matmul-mlir.json",
       label: "tessera: TS \u2192 MLIR \u2192 WGSL" },
   ];
 
   const a = randomF32(M * K, 0x1234);
   const b = randomF32(K * N, 0x5678);
   const results = {};
+  const quanta = {};
 
   for (const v of VARIANTS) {
     write(`── ${v.label} ${"─".repeat(Math.max(0, 34 - v.label.length))}`);
@@ -135,8 +139,23 @@ async function main() {
       continue;
     }
 
+    let entry = v.entry;
+    if (v.manifest) {
+      const mres = await fetch(v.manifest);
+      if (!mres.ok) {
+        write(`<span class="warn">skipped</span> — ${v.manifest} not found (run: npm run demo)`);
+        write("");
+        continue;
+      }
+      const man = await mres.json();
+      entry = man.entryPoint;
+      write(`manifest   name "${man.name}"  entryPoint "${man.entryPoint}"` +
+            (man.entryPoint !== man.name
+              ? `  <span class="dim">(naga renamed it)</span>` : ""));
+    }
+
     const t0 = performance.now();
-    const { pipeline, messages } = await compile(ctx.device, source, v.entry, v.key);
+    const { pipeline, messages } = await compile(ctx.device, source, entry, v.key);
     write(`source ${source.split("\n").length} lines   pipeline ${f(performance.now() - t0)} ms`);
     for (const m of messages) {
       write(`<span class="warn">${m.type} ${m.line}:${m.col}</span>  ${m.message}`);
@@ -147,7 +166,12 @@ async function main() {
     write(`workgroup ${gpu.workgroup.join("x")}   dispatch ${gpu.dispatch.join("x")}   ` +
           `wgBytes ${gpu.workgroupBytes}`);
     write(`gpu ${gpu.gpuMs !== null ? f(gpu.gpuMs) + " ms  " + f(gpu.gflopsGpu, 1) + " GFLOP/s" : "(no timestamps)"}` +
-          `   wall ${f(gpu.wallMs)} ms`);
+          `   wall ${f(gpu.wallMs)} ms` +
+          (gpu.quanta !== null
+            ? `   <span class="warn">${gpu.quanta} x 65.536us</span>` +
+              `<span class="dim"> quantised — that is the resolution</span>`
+            : ""));
+    quanta[v.key] = gpu.quanta;
     const s = summarize(gpu.out);
     write(`output   min ${f(s.min)}  max ${f(s.max)}  mean ${f(s.mean)}  zeros ${s.zeros}  nans ${s.nans}`);
     write("");
@@ -163,6 +187,13 @@ async function main() {
     const c2 = allClose(results.mlir, results.hand, { rtol: 1e-5, atol: 1e-6 });
     write(`bit-exact   ${same} / ${results.hand.length}  (${(100 * same / results.hand.length).toFixed(4)}%)`);
     write(`maxAbsDiff  ${c2.maxAbsDiff.toExponential(3)}`);
+    if (quanta.hand && quanta.mlir) {
+      // Both kernels ran back to back in one session, so this comparison
+      // controls for clock and thermal state in a way cross-run numbers cannot.
+      write(`speed       hand ${quanta.hand}q vs tessera ${quanta.mlir}q  ` +
+            `= ${(quanta.mlir / quanta.hand).toFixed(2)}x  ` +
+            `<span class="dim">(paired, ${Math.abs(quanta.mlir - quanta.hand)} quanta apart)</span>`);
+    }
     if (same === results.hand.length) {
       write(`<span class="ok">IDENTICAL</span>  the generated kernel computes exactly what the hand-written one does.`);
     } else {

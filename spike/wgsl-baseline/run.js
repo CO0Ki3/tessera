@@ -160,11 +160,12 @@ export async function runMatmul(ctx, pipeline, a, b, { M, N, K }) {
   const out = new Float32Array(readback.getMappedRange().slice(0));
   readback.unmap();
 
-  let gpuMs = null;
+  let gpuMs = null, gpuNs = null;
   if (hasTimestamps) {
     await queryRead.mapAsync(GPUMapMode.READ);
     const ts = new BigInt64Array(queryRead.getMappedRange().slice(0));
-    gpuMs = Number(ts[1] - ts[0]) / 1e6;
+    gpuNs = Number(ts[1] - ts[0]);
+    gpuMs = gpuNs / 1e6;
     queryRead.unmap();
   }
 
@@ -172,10 +173,22 @@ export async function runMatmul(ctx, pipeline, a, b, { M, N, K }) {
   querySet?.destroy();
 
   const flops = 2 * M * N * K;
+
+  // Chrome quantizes timestamp-query results unless developer features are
+  // enabled. Measured on this machine, EVERY sample is an exact multiple of
+  // 2^16 ns = 65.536 us, so that is the real resolution floor — differences
+  // smaller than one quantum are invisible, and a comparison is only meaningful
+  // when the two kernels are several quanta apart.
+  const QUANTUM_NS = 65536;
+  const quantised = gpuNs !== null && gpuNs % QUANTUM_NS === 0;
+
   return {
     out,
     wallMs,
     gpuMs,
+    gpuNs,
+    quantumNs: quantised ? QUANTUM_NS : null,
+    quanta: quantised ? gpuNs / QUANTUM_NS : null,
     dispatch: [dispatchX, dispatchY, 1],
     workgroup: [WORKGROUP.x, WORKGROUP.y, WORKGROUP.z],
     workgroupBytes: (64 * 16 + 16 * 64) * 4,

@@ -165,10 +165,19 @@ two implementations on numbers gathered this way.
 is a floor on cost, not a kernel measurement. `gpuMs` comes from
 `timestamp-query` at pass boundaries — the only available granularity, since
 in-pass `writeTimestamp` was removed from the spec for all implementations
-(gpuweb#2190). **Chrome quantizes timestamps to 100 µs** unless developer
-features are enabled, so a suspiciously round `gpuMs` means you are reading
-quantized data. Do not treat any number here as a benchmark; a correct
-measurement layer is its own piece of work.
+(gpuweb#2190).
+
+**Chrome quantizes those timestamps, and this harness measured the quantum.**
+Every GPU timing it has produced — eight samples across four sessions — is an
+exact multiple of **2^16 ns = 65.536 µs**. The harness now reports the quanta
+count next to each timing for exactly that reason: the printed milliseconds imply
+a precision that does not exist, and a difference smaller than one quantum is
+invisible.
+
+The practical rule that follows: compare kernels **paired within one run**, where
+clock and thermal state are shared, and only believe a difference of several
+quanta. Cross-session absolute numbers on this harness have ranged 1.05–1.84 ms
+for the *same* kernel, so they carry almost no information on their own.
 
 ## Next
 
