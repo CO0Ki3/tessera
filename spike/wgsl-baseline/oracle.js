@@ -318,3 +318,81 @@ export function maxUlpDiff(got, want) {
   }
   return { ulp: worst, index: at };
 }
+
+// ---------------------------------------------------------------------------
+// Layer normalisation, mirroring the emitted kernel's traversal exactly.
+//
+//   y[m,n] = (x[m,n] - mean) * rstd,   rstd = 1 / sqrt(E[x^2] - mean^2 + eps)
+//
+// Same lane geometry as softmax: lane tx owns columns nn + tx*TN + n, accumulates
+// within a lane over ascending nn then ascending n, and the WGX lane partials are
+// combined in order. Both moments are carried through ONE pass, which is what
+// makes this kernel structurally different from softmax and why it was chosen.
+//
+// The element count is the AXIS EXTENT, not the padded block count — masked lanes
+// contribute zero to both moments, so they must not be counted in the mean. That
+// is the whole reason `.pad(zero)` is right here and `.pad(negInf)` was right for
+// softmax's max, on the same axis with the same raggedness.
+//
+// Like softmax, this cannot be bit-exact: WGSL's inverseSqrt carries an accuracy
+// allowance just as exp does.
+// ---------------------------------------------------------------------------
+export function layernormF32(x, { M, N }, { eps = 1e-5, ...geom } = {}) {
+  const { BM = 64, BN = 64, WGX = 16, WGY = 16, TM = 4, TN = 4 } = geom;
+  const fr = Math.fround;
+  const y = new Float32Array(M * N);
+
+  for (let blockRow = 0; blockRow * BM < M; blockRow++) {
+    for (let ty = 0; ty < WGY; ty++) {
+      for (let m = 0; m < TM; m++) {
+        const row = blockRow * BM + ty * TM + m;
+        if (row >= M) continue;
+        const base = row * N;
+
+        const laneS = new Float32Array(WGX);
+        const laneQ = new Float32Array(WGX);
+        for (let nn = 0; nn < N; nn += BN) {
+          for (let tx = 0; tx < WGX; tx++) {
+            for (let n = 0; n < TN; n++) {
+              const col = nn + tx * TN + n;
+              const v = col < N ? x[base + col] : 0;
+              laneS[tx] = fr(laneS[tx] + v);
+              laneQ[tx] = fr(laneQ[tx] + fr(v * v));
+            }
+          }
+        }
+        let s = 0, q = 0;
+        for (let j = 0; j < WGX; j++) s = fr(s + laneS[j]);
+        for (let j = 0; j < WGX; j++) q = fr(q + laneQ[j]);
+
+        const mu = fr(s / N);
+        const inv = fr(1 / Math.sqrt(fr(fr(fr(q / N) - fr(mu * mu)) + eps)));
+
+        for (let nn = 0; nn < N; nn += BN) {
+          for (let tx = 0; tx < WGX; tx++) {
+            for (let n = 0; n < TN; n++) {
+              const col = nn + tx * TN + n;
+              if (col >= N) continue;
+              y[base + col] = fr(fr(x[base + col] - mu) * inv);
+            }
+          }
+        }
+      }
+    }
+  }
+  return y;
+}
+
+/** Per-row mean and variance of the output. A correct layernorm gives 0 and 1. */
+export function rowMoments(y, { M, N }) {
+  const mean = new Float64Array(M), varr = new Float64Array(M);
+  for (let i = 0; i < M; i++) {
+    let s = 0;
+    for (let j = 0; j < N; j++) s += y[i * N + j];
+    const mu = s / N;
+    let v = 0;
+    for (let j = 0; j < N; j++) { const d = y[i * N + j] - mu; v += d * d; }
+    mean[i] = mu; varr[i] = v / N;
+  }
+  return { mean, varr };
+}

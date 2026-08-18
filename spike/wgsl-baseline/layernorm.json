@@ -1,6 +1,6 @@
 {
-  "name": "softmax_f32",
-  "entryPoint": "softmax_f32",
+  "name": "layernorm_f32",
+  "entryPoint": "layernorm_f32",
   "backend": "wgsl",
   "schedule": "rowwise",
   "dtype": "f32",
@@ -51,5 +51,5 @@
     "x:n",
     "y:n"
   ],
-  "pad": "negInf"
+  "pad": "zero"
 }

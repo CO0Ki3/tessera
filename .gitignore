@@ -21,3 +21,4 @@ build-ragged/
 build-direct/
 build-direct-ragged/
 build-softmax/
+build-ln/

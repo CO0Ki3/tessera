@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tessera — the row-wise schedule</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+         margin: 0; padding: 24px; max-width: 960px; background: Canvas; color: CanvasText; }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .sub { opacity: .65; margin: 0 0 18px; }
+  button { font: inherit; padding: 7px 16px; cursor: pointer; border: 1px solid CanvasText;
+           border-radius: 5px; background: transparent; color: inherit; }
+  button:disabled { opacity: .4; cursor: default; }
+  pre { white-space: pre-wrap; word-break: break-word; margin: 16px 0 0; padding: 16px;
+        border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
+        border-radius: 6px; overflow-x: auto; }
+  .ok { color: #12894a; font-weight: 600; } .bad { color: #c02626; font-weight: 600; }
+  .warn { color: #a06a00; } .dim { opacity: .6; }
+  @media (prefers-color-scheme: dark) {
+    .ok { color: #4ade80; } .bad { color: #f87171; } .warn { color: #fbbf24; }
+  }
+</style>
+</head>
+<body>
+
+<h1>tessera — the row-wise schedule</h1>
+<p class="sub">
+  Two kernel families, <b>one emitter</b>. softmax and layernorm share every line of
+  <code>emitRowwise</code>; their accumulators, passes and store are read from the body
+  rather than matched against a template. Adding layernorm added zero emitter lines.<br>
+  Both at 1024&times;750 with a ragged reduction axis.
+  See <code>docs/004-falsification.md</code> part 2.
+</p>
+
+<button id="run">Run</button>
+<pre id="log">Ready.</pre>
+
+<script type="module">
+import { initDevice, compile } from "./run.js";
+import { createRunner, measureInterleaved } from "./measure.js";
+import { randomF32, softmaxF32, layernormF32, rowSums, rowMoments,
+         maxUlpDiff, allClose, summarize, bitExactCount } from "./oracle.js";
+
+const logEl = document.getElementById("log");
+const btn = document.getElementById("run");
+let buf = "";
+const write = (s = "") => { buf += s + "\n"; logEl.innerHTML = buf; };
+const yieldToPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+const f = (x, n = 3) => Number(x).toFixed(n);
+
+const KERNELS = [
+  {
+    key: "softmax", file: "./softmax.wgsl", man: "./softmax.json",
+    label: "softmax", identity: "negInf",
+    why: "the identity for a masked MAX — zero would be right until a tail row was all-negative",
+    oracle: (x, d) => softmaxF32(x, d),
+    invariant: (y, d) => {
+      const s = rowSums(y, d);
+      let lo = Infinity, hi = -Infinity;
+      for (const v of s) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+      return { name: "every row sums to 1", detail: `[${lo.toFixed(9)}, ${hi.toFixed(9)}]`,
+               ok: Math.abs(lo - 1) < 1e-4 && Math.abs(hi - 1) < 1e-4 };
+    },
+  },
+  {
+    key: "layernorm", file: "./layernorm.wgsl", man: "./layernorm.json",
+    label: "layernorm", identity: "zero",
+    why: "a masked lane must contribute nothing to either moment — same axis, same raggedness, different operator",
+    oracle: (x, d) => layernormF32(x, d),
+    invariant: (y, d) => {
+      const { mean, varr } = rowMoments(y, d);
+      let ml = Infinity, mh = -Infinity, vl = Infinity, vh = -Infinity;
+      for (let i = 0; i < mean.length; i++) {
+        ml = Math.min(ml, mean[i]); mh = Math.max(mh, mean[i]);
+        vl = Math.min(vl, varr[i]); vh = Math.max(vh, varr[i]);
+      }
+      return { name: "every row has mean 0 and variance 1",
+               detail: `mean [${ml.toExponential(2)}, ${mh.toExponential(2)}]  ` +
+                       `var [${vl.toFixed(6)}, ${vh.toFixed(6)}]`,
+               ok: Math.abs(ml) < 1e-4 && Math.abs(mh) < 1e-4 && vl > 0.99 && vh < 1.01 };
+    },
+  },
+];
+
+btn.addEventListener("click", async () => {
+  btn.disabled = true; buf = "";
+  try { await main(); }
+  catch (e) { write(`\n<span class="bad">FAILED</span>  ${e.message}`); }
+  finally { btn.disabled = false; }
+});
+
+async function main() {
+  const ctx = await initDevice();
+  write(`adapter  ${ctx.adapterInfo.vendor} / ${ctx.adapterInfo.architecture}`);
+  write("");
+
+  for (const K of KERNELS) {
+    const man = await (await fetch(K.man)).json();
+    const M = man.axes.m, N = man.axes.n, dims = { M, N };
+    const src = await (await fetch(K.file)).text();
+
+    write(`── ${K.label} ${"─".repeat(Math.max(0, 44 - K.label.length))}`);
+    write(`axes      m=${M}  n=${N}   <span class="dim">ragged: ${N} = ${Math.floor(N/64)}x64 + ${N%64}</span>`);
+    write(`pad       ${man.pad}   <span class="dim">${K.why}</span>`);
+    write(`derived   workgroup ${man.workgroup.join("x")}  fragment ${man.fragment.join("x")}  ` +
+          `dispatch ${man.dispatch.join("x")}  wgBytes ${man.workgroupBytes}`);
+    const bounds = (src.match(/< \d+u\)/g) ?? []).length;
+    write(`shader    ${src.split("\n").length} lines   ${bounds} synthesised bound checks`);
+
+    const { pipeline, messages } = await compile(ctx.device, src, man.entryPoint, K.key);
+    for (const m of messages) write(`<span class="warn">${m.type}</span> ${m.message}`);
+
+    const x = randomF32(M * N, 0x99);
+    const runner = createRunner(ctx, pipeline, [x], man, K.key);
+    const st = (await measureInterleaved([runner], { warmup: 6, reps: 12 })).get(K.key);
+    if (st) write(`gpu       min ${st.minQ}q  med ${st.medianQ}q  spread ${st.spreadQ}q`);
+
+    const got = await runner.result();
+    const s = summarize(got);
+    write(`output    min ${f(s.min, 6)}  max ${f(s.max, 6)}  nans ${s.nans}`);
+
+    // check 1 — a property of a correct kernel, needing no reference at all
+    const inv = K.invariant(got, dims);
+    write(`invariant ${inv.name}`);
+    write(`          ${inv.detail}   ${inv.ok ? '<span class="ok">PASS</span>' : '<span class="bad">FAIL</span>'}`);
+
+    // check 2 — against the CPU reference, on the scale a transcendental permits
+    await yieldToPaint();
+    const want = K.oracle(x, dims);
+    const exact = bitExactCount(got, want);
+    const { ulp, index } = maxUlpDiff(got, want);
+    const cmp = allClose(got, want, { rtol: 1e-5, atol: 1e-7 });
+    write(`oracle    bit-exact ${exact} / ${got.length} (${(100*exact/got.length).toFixed(2)}%)   ` +
+          `max ${ulp} ULP   maxRelDiff ${cmp.maxRelDiff.toExponential(2)}`);
+    if (ulp <= 8 && inv.ok) {
+      write(`          <span class="ok">PASS</span>  <span class="dim">within what an inexact ` +
+            `${K.key === "softmax" ? "exp" : "inverseSqrt"} explains; a mask error would move a whole row.</span>`);
+    } else {
+      const r = Math.floor(index / N), c = index % N;
+      write(`          <span class="bad">FAIL</span>  worst at [${r}][${c}]  gpu ${got[index]}  cpu ${want[index]}` +
+            `   <span class="dim">(tail starts at column ${N - (N % 64)})</span>`);
+    }
+    write("");
+    runner.destroy();
+  }
+}
+</script>
+</body>
+</html>
