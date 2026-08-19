@@ -729,11 +729,42 @@ storage against the 16384 B floor. Every row sums to 1 — an invariant needing 
 reference, which a wrong cross-lane fold would break outright — and ULP against a
 CPU `softmax(A·B)`.
 
-**The first oracle was wrong, and the way it was wrong is the point.** It reported
-189 ULP and a FAIL. It did not contract the multiply-add, where the adapter fuses
-`acc + a*b` into one rounding — which the plain matmul had already established at
-786432/786432 bit-exact. Two roundings leave the scores off by ~1.14e-5, and
-`exp` turns an absolute score error into a relative one, so ~190 ULP comes out the
-far side. Predicted 192, measured 189. Same class as the 912 spurious failures in
-`docs/002` §2: **a reference that does not match the machine's arithmetic,
-reported as a kernel bug.**
+Measured:
+
+```
+every row sums to 1   [0.999999754, 1.000000402]        PASS
+softmax(A·B) oracle   45 ULP against a bound of 64      PASS
+TypeGPU vs raw        65536 / 65536 bit-exact           IDENTICAL
+```
+
+**Both oracle failures on the way were the reference, not the kernel, and both
+are the same mistake this project has now made three times.**
+
+*189 ULP.* The reference did not contract the multiply-add, where the adapter
+fuses `acc + a*b` into one rounding — which the plain matmul had already
+established at 786432/786432 bit-exact. Two roundings leave the scores off by
+~1.14e-5, and `exp` turns an absolute score error into a relative one, so ~190
+ULP comes out the far side. Predicted 192, measured 189.
+
+*45 ULP.* The bound was flat at 8, copied from `rowwise.html`'s softmax. Measured
+in two parts rather than argued: the cross-lane fold order against a linear sum
+costs **4 ULP** and is not the cause; and a GPU computes `exp(x)` as
+`exp2(x · log2e)`, so rounding that product to f32 costs about **|x| ULP** of the
+result — `|x| = 20` gives ~1, `47` gives ~22, `60` gives ~28. This kernel feeds
+`exp` a 512-term dot product, so the argument reaches −55.6 where softmax over
+data read from memory keeps it small. The bound is now
+`ceil(max |s − rowmax|) + 8`, with the oracle returning that maximum because it
+*is* the error scale.
+
+Same class as the 912 spurious matmul failures in `docs/002` §2 both times: **a
+criterion that is easy to state, standing in for one that is true.** The sharp
+check here is the invariant — rows summing to 1 needs no reference at all, and a
+wrong cross-lane fold breaks it outright.
+
+### G4 is what is left
+
+Composing two contractions in one body. `planContraction` is already per
+contraction, but `plan.lanes` is kernel-global: it decides which invocation owns
+which output element, and a second contraction consuming the first's fragment
+needs that fragment redistributed when the two layouts disagree. That is the
+flash-attention register-layout problem, and nothing in G1–G3 touched it.
