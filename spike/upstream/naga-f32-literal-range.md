@@ -106,7 +106,10 @@ Running the boundary through `createShaderModule` on both browsers:
 | `3.4028235677973366e38` — the midpoint | rejected | rejected |
 | `1e39` | rejected | rejected |
 
-Rows 1–2 are what naga was given, in two spellings; row 3 is what naga wrote.
+Rows 1–2 are what naga was given, in two spellings. **Row 3 is pasted verbatim
+from the `out.wgsl` the CLI wrote above** — no hand-editing, and not a spelling
+chosen to make a point.
+
 **Both browsers accept the input. Only Firefox accepts the output.** The value is
 unchanged and both spellings of it are portable, so what breaks the shader is the
 rewrite.
@@ -184,13 +187,14 @@ which both implementations already reject. Nothing exercises the region between
 
 *Repro page.* A single self-contained HTML file that runs the cases through
 `createShaderModule` and prints each browser's verdict, for pasting results
-without describing them. It covers the **browser half only** — it cannot run
-naga, so the `naga in.wgsl out.wgsl` step above is what supplies row 2's string:
+rather than describing them:
 <!-- attach f32-literal.html, or inline it here -->
 
-Its first two rows are the input/output pair: `0x1.fffffep+127` as given to naga,
-and `340282350000000000000000000000000000000f` as naga wrote it. Both browsers
-take the input; only Firefox takes the output.
+It covers the **browser half only** — it cannot run naga. Row 3's literal is
+copied out of the `out.wgsl` that `naga in.wgsl out.wgsl` produced, above; it is
+not a spelling chosen to make a point. Rows 1–2 are the input as given to naga,
+in two spellings, and row 3 is naga's output: both browsers take the input, only
+Firefox takes the output.
 
 **Platform**
 
