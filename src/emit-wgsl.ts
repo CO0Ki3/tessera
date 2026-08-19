@@ -100,7 +100,12 @@ export function emitWGSL(k: KernelIR): string {
    */
   const planWith = (ax: AxisIR, enclosing: readonly AxisIR[], names: ReadonlySet<string>) =>
     planContraction(
-      [...accumulate, ...enclosing], ax,
+      // Minus the axis being contracted. An enclosing loop's axis is free to the
+      // pass inside it — unless that pass is the one contracting it. Attention's
+      // inner contraction runs over `d`, which is also a grid axis because the
+      // output is indexed by it, and accumulating over it there would ask for
+      // three lanes from a workgroup that has two.
+      [...accumulate, ...enclosing].filter((a2) => a2.name !== ax.name), ax,
       reads.filter((b) => names.has(b.name)).map((b) => ({ binding: b.name, axes: logical(b).axes })),
       k.workgroup,
       out.axes[1],
@@ -346,9 +351,13 @@ export function emitWGSL(k: KernelIR): string {
 
   // ---- accumulators ----------------------------------------------------------
   for (const acc of body.accs) {
-    P(`var ${acc.name} : array<${ty}, ${frag}>;`, 1);
+    // A row accumulator holds one value per ROW cell; a fragment holds one per
+    // cell of the whole 2-D fragment. Those were the same number while a body had
+    // one kind of accumulator, which is why this could use `frag` for both.
+    const n = acc.kind === "row" ? slices[0].slice : frag;
+    P(`var ${acc.name} : array<${ty}, ${n}>;`, 1);
     const init = PAD_LITERAL[acc.init];
-    for (let c = 0; c < frag; c++) P(`${acc.name}[${c}] = ${init};`, 1);
+    for (let c = 0; c < n; c++) P(`${acc.name}[${c}] = ${init};`, 1);
   }
   P();
 
@@ -614,6 +623,23 @@ export function emitWGSL(k: KernelIR): string {
       `scratch[(${rowLane} * ${u(row.slice)} + ${u(rc)}) * ${u(width)} + ${lane}]`;
 
     for (const up of step.updates) {
+      if (up.k === "mmaFrag") {
+        // THE REDISTRIBUTION — all that is left of G4.
+        //
+        // The inner contraction laid `P` out with the axis this one sums along
+        // spread across the lanes: four of the sixty-four `n` values per
+        // invocation. Summing it in place gives a quarter of each row.
+        //
+        // The mechanism is to stage `P` through workgroup memory, exactly as an
+        // operand read from a buffer is staged, with registers as the source. The
+        // budget is what makes it more than plumbing: q, k, v and the staged
+        // fragment are alive at once, which is 28672 B at a 64x64x16 tile against
+        // a 16384 B floor. 32x32x16 fits, at 10240 B.
+        throw new Error(
+          `${k.name}: contracting a fragment along an axis it holds on a lane. ` +
+          `Staging it through workgroup memory is not implemented — and at this ` +
+          `tile it would not fit either. See docs/004 R12, G4.`);
+      }
       if (up.k !== "foldFrag") {
         throw new Error(`${k.name}: a pass with a nested contraction folds its fragment`);
       }

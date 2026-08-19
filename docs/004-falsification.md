@@ -797,6 +797,38 @@ invisible.
 
 Again byte-identical: all six existing kernels unchanged.
 
+### Four checks that were matmul-shaped
+
+Getting attention as far as the redistribution meant correcting four things, each
+of which had been right while every kernel had one contraction:
+
+**`accumulate = grid ∪ enclosing`** was my rule for a nested pass, and it is
+wrong. Attention's inner contraction runs over `d`, which is *also* a grid axis
+because the output is indexed by it, so the rule asked for three lanes from a
+workgroup that has two. The correct rule excludes the axis being contracted:
+`(grid ∪ enclosing) \ {contract}`. It gives the same answer as before for
+nested-softmax and the right one for attention.
+
+**A body may hold both kinds of accumulator.** `parseBody` refused a mix because
+`accKind` picked the schedule and there was one schedule per kernel. The emitter
+has not branched on schedule since R11, and each pass now derives its own
+geometry, so what was left of `accKind` is bookkeeping. Attention needs the mix:
+a running max and a running sum, which are rows, alongside the output fragment.
+Accumulators are sized by kind now — those were the same number while a body had
+only one.
+
+**"Reduced and also stored along" is about DEPTH.** The check refused any axis
+that was both, which is right at the top level — `c[m,n] = sum_n …` sums over the
+axis indexing the output, and that is undefined rather than unimplemented — and
+wrong when the contraction is nested. Attention's `d` is contracted inside the
+score loop and free at the store, which is two contractions, not one.
+
+**Tile coherence was positional.** It checked grid[0] against `bm`, grid[1]
+against `bn` and the reduction against `bk` — matmul's shape. Attention's second
+parallel axis is the head dimension, blocked at `bk` because that is also what the
+score contraction walks. Now every axis must be blocked at one of the tile's three
+sizes, which still catches the typo it was for without assuming a position.
+
 ### The redistribution, measured before implementing it
 
 `mma` now takes a computed fragment as its first operand, and the parser reads it,

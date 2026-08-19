@@ -566,7 +566,15 @@ export function parseBody(
   if (!steps.some((p) => p.k === "store" || p.k === "storeFrag")) {
     bad(body, `no store: nothing is written`);
   }
-  const kinds = new Set(accs.map((a) => a.kind));
-  if (kinds.size > 1) bad(body, `a body mixes register fragments with row accumulators`);
-  return { accKind: accs[0].kind, accs, steps };
+  // A body may hold both. Attention does: a running max and a running sum, which
+  // are rows, alongside the output fragment. This used to be refused because
+  // `accKind` picked the schedule, and there was one schedule per kernel; the
+  // emitter has not branched on it since the two were unified, and each pass now
+  // derives its own geometry. What is left of `accKind` is bookkeeping — the tile
+  // default when none is declared, and what the manifest reports — so "frag if
+  // any accumulator is one" is the honest reading rather than a choice.
+  return {
+    accKind: accs.some((a) => a.kind === "frag") ? "frag" : "row",
+    accs, steps,
+  };
 }

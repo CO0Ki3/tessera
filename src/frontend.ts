@@ -338,16 +338,18 @@ function deriveAxisRoles(
 
   // Nested passes contract too. `for n { for k { … } … }` reduces over both, and
   // walking only the top level would report the inner axis as declared-and-unused.
-  const visit = (st: Step): void => {
+  const topContracted: string[] = [];
+  const visit = (st: Step, depth: number): void => {
     if (st.k === "reduce" || st.k === "store") {
       push(contracted, st.axis);
-      for (const p2 of st.inner) visit(p2);
+      if (depth === 0) push(topContracted, st.axis);
+      for (const p2 of st.inner) visit(p2, depth + 1);
     }
     if (st.k === "store" || st.k === "storeFrag") {
       for (const c of st.coords) if (c.kind === "at") push(parallel, c.axis);
     }
   };
-  for (const st of parsed.steps) visit(st);
+  for (const st of parsed.steps) visit(st, 0);
 
   for (const n of [...contracted, ...parallel]) {
     if (!byName.has(n)) {
@@ -368,15 +370,16 @@ function deriveAxisRoles(
   if (contracted.length < 1) {
     fail(node, `a kernel reduces over at least one axis, and this body reduces over none`);
   }
-  // Reduced and stored along, WITHIN ONE CONTRACTION: `c[m,n] = sum_n …` sums
-  // over the axis it also indexes the output by. That is not unimplemented, it is
-  // undefined, and it stays an error however far the emitter gets.
+  // Reduced at the TOP level and also stored along: `c[m,n] = sum_n …` sums over
+  // the axis it indexes the output by. Not unimplemented — undefined, and an error
+  // however far the emitter gets.
   //
-  // NOT to be confused with attention, where the head dimension is contracted in
-  // `S = Q·Kᵀ` and free in `O = P·V`. That is the same axis in two roles across
-  // TWO contractions, which is legal and unimplemented — and it cannot reach this
-  // check anyway, because a body with two reduction axes is refused above.
-  const both = parallel.filter((n) => contracted.includes(n));
+  // The depth is what separates this from attention, where the head dimension is
+  // contracted in `S = Q·Kᵀ` and free in `O = P·V`. There the contraction is
+  // NESTED, so the two roles belong to different contractions and the axis is
+  // genuinely free at the store. An earlier version of this check counted every
+  // depth and refused attention for being ill-defined, which it is not.
+  const both = parallel.filter((n) => topContracted.includes(n));
   if (both.length) {
     fail(node, `axis "${both[0]}" is reduced and also stored along, in the same ` +
                `contraction: the sum runs over the axis that indexes the output. ` +
@@ -534,15 +537,21 @@ export function compileToIR(entryFile: string): KernelIR {
   // hard-wired "two grid axes, one reduce axis blocked at bk" into the surface.
   // Reported here instead: one error, and kernels that are not matmul-shaped can
   // exist. docs/001 §7 listed suppressing that cascade as outstanding work.
-  if (declaredTile && grid.length === 2) {
-    const named: [string, number, number][] = [
-      [grid[0].name, grid[0].block, declaredTile.bm],
-      [grid[1].name, grid[1].block, declaredTile.bn],
-      [reduce[0].name, reduce[0].block, declaredTile.bk],
-    ];
-    for (const [nm, got, want] of named) {
-      if (got !== want) {
-        fail(specNode, `TSA0051: axis "${nm}" is blocked at ${got}, but the tile says ${want}`);
+  if (declaredTile) {
+    // Every axis must be blocked at one of the tile's three sizes — not at a
+    // POSITION in the tile. The positional form assumed grid[0] is bm, grid[1] is
+    // bn and the reduction is bk, which is matmul's shape and not every kernel's:
+    // attention's second parallel axis is the head dimension, blocked at bk
+    // because it is also what the score contraction walks.
+    //
+    // What this still catches is the thing it was for — an axis blocked at a size
+    // the tile does not mention at all, which is a typo rather than a schedule.
+    const legal = new Set([declaredTile.bm, declaredTile.bn, declaredTile.bk]);
+    for (const a2 of axes) {
+      if (!legal.has(a2.block)) {
+        fail(specNode,
+          `TSA0051: axis "${a2.name}" is blocked at ${a2.block}, which the tile does ` +
+          `not mention (bm ${declaredTile.bm}, bn ${declaredTile.bn}, bk ${declaredTile.bk})`);
       }
     }
   }
