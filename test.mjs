@@ -212,8 +212,13 @@ console.log("\none emitter");
   // Count the MASKING select specifically. `select` is also how relu is emitted,
   // and an earlier version of this check counted that too -- the same false
   // positive as counting loop bounds as masks. The masking one substitutes the
-  // pad, so it is the one that mentions PAD.
-  const sel = src.split("select(${PAD}").length - 1;
+  // identity, so it is the one that calls padOf.
+  //
+  // The pattern tracks a rename: the identity used to be one constant per kernel,
+  // `PAD`, and became `padOf(binding)` when a kernel was allowed two. The claim is
+  // unchanged -- substitution happens in one place -- so the check follows the
+  // spelling rather than being deleted.
+  const sel = src.split("select(${padOf(").length - 1;
   const min = src.split("[min(").length - 1;
   if (sel === 1 && min === 1) {
     ok(`the pad is substituted from exactly one place, and the clamp from one`);
@@ -257,6 +262,49 @@ console.log("\nharness artifacts");
       if (src.includes(`fn ${ep}(`)) ok(`${wgsl} declares the entry point ${man}.json names`);
       else bad(`${wgsl}.wgsl has no fn ${ep} — the probe is stale, regenerate it`);
     } catch { bad(`${wgsl}: missing — run npm run demo`); }
+  }
+}
+
+// ---- two identities in one kernel -----------------------------------------
+// The identity is the binding's, not the kernel's. maxsum feeds p to a MAX and q
+// to a SUM through the same ragged axis, so a masked lane of p must read negative
+// infinity and one of q must read zero. Swapping them is wrong only in the tail
+// and only for some data, which is the bug class the surface exists to prevent --
+// so it is worth asserting that the two really do come out different, rather than
+// that the build merely stopped failing.
+console.log("\nper-binding identities");
+try {
+  execFileSync("npx", ["tsx", "src/cli.ts", "build", "examples/maxsum.kernel.ts", "-o", out],
+               { stdio: "pipe" });
+  const wgsl = readFileSync(join(out, "maxsum_f32.wgsl"), "utf8");
+  const idOf = (b) => [...new Set([...wgsl.matchAll(
+    new RegExp(`select\\(([^,]+), ${b}\\[`, "g"))].map((m) => m[1]))];
+  const [pi, qi] = [idOf("p"), idOf("q")];
+  if (pi.length !== 1 || qi.length !== 1) {
+    bad(`a binding got more than one identity: p=${pi.join("/")} q=${qi.join("/")}`);
+  } else if (pi[0] === qi[0]) {
+    bad(`both bindings got ${pi[0]} — the identity is still collapsing to one per kernel`);
+  } else if (!pi[0].startsWith("-3.4028234663852886e38") || qi[0] !== "0.0") {
+    bad(`unexpected identities: p=${pi[0]} q=${qi[0]}`);
+  } else {
+    ok(`p reads ${pi[0]} where q reads ${qi[0]} — max and sum, same ragged axis`);
+  }
+} catch (e) {
+  bad(`maxsum:\n${e.stdout?.toString() ?? e.message}`);
+}
+
+// The MLIR backend carries one identity per kernel and one kernel shape. It must
+// say so rather than pick one, which would be wrong in the tail and silent.
+try {
+  execFileSync("npx", ["tsx", "src/cli.ts", "build", "examples/maxsum.kernel.ts",
+                       "-o", out, "--backend=mlir"], { stdio: "pipe" });
+  bad("the MLIR backend accepted a two-identity kernel it cannot express");
+} catch (e) {
+  const msg = (e.stdout?.toString() ?? "") + (e.stderr?.toString() ?? "");
+  if (/more than one identity element/.test(msg)) {
+    ok("the MLIR backend refuses it by name rather than emitting one of the two");
+  } else {
+    bad(`the MLIR backend failed for the wrong reason:\n${msg.slice(0, 300)}`);
   }
 }
 

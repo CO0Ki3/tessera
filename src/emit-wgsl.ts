@@ -57,7 +57,14 @@ export function emitWGSL(k: KernelIR): string {
   const L: string[] = [];
   const P = (s = "", i = 0) => L.push(s ? "  ".repeat(i) + s : "");
   const u = (n: number) => `${n}u`;
-  const PAD = PAD_LITERAL[k.pad];
+  /**
+   * The identity for THIS binding's out-of-range lanes. Per binding, because one
+   * kernel can want two — `zero` where a masked lane must annihilate in a sum,
+   * `negInf` where it must not bias a maximum toward itself. Falls back to the
+   * kernel-level value for a binding that names none, which happens only when it
+   * touches no ragged axis and so has no masked lane to fill.
+   */
+  const padOf = (bd: BindingIR) => PAD_LITERAL[bd.pad ?? k.pad];
   const ragged = (a: AxisIR) => a.fit === "ragged";
   const axisOf = new Map([...k.grid, ...k.reduce].map((x) => [x.name, x]));
   /**
@@ -104,7 +111,7 @@ export function emitWGSL(k: KernelIR): string {
       ? `${lhs} = ${bd.name}[${off}];`
       // Clamp then select: branchless. A branch would diverge for exactly one
       // block per row.
-      : `${lhs} = select(${PAD}, ${bd.name}[min(${off}, ${u(bd.elements - 1)})], ${g.join(" && ")});`, ind);
+      : `${lhs} = select(${padOf(mem)}, ${bd.name}[min(${off}, ${u(bd.elements - 1)})], ${g.join(" && ")});`, ind);
   };
   const emitStore = (bd: BindingIR, i0: string, i1: string, val: string, ind: number) => {
     const g = guards(bd, i0, i1);
@@ -153,7 +160,8 @@ export function emitWGSL(k: KernelIR): string {
     `   fragment ${frag}   ${seqDepth} sequential steps`);
   P(`//   staged: ${staged.map((o) => o.binding).join(", ") || "nothing — no operand is reused"}` +
     `   workgroup ${plan.workgroupElements * 4} B`);
-  P(`//   ${k.maskedLoads.length ? `masked: ${k.maskedLoads.join(" ")}   pad ${k.pad} (${PAD})` : "no masks: every axis divides its block"}`);
+  const padNote = k.bindings.filter((b) => b.pad).map((b) => `${b.name}=${b.pad}`).join(" ");
+  P(`//   ${k.maskedLoads.length ? `masked: ${k.maskedLoads.join(" ")}   pad ${padNote || k.pad}` : "no masks: every axis divides its block"}`);
   P();
 
   for (const [i, bd] of k.bindings.entries()) {

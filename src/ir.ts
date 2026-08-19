@@ -98,6 +98,20 @@ export interface BindingIR {
    * type error unless it is said.
    */
   readonly transposed?: boolean;
+  /**
+   * The identity an out-of-range lane of THIS binding reads.
+   *
+   * Per binding rather than per kernel, because a single kernel legitimately
+   * wants two: attention pads `Q·Kᵀ`'s operands with `zero`, so a masked lane
+   * annihilates in the sum, and pads the row max with `negInf`, because zero
+   * would bias a maximum toward itself. The parser has always recorded it per
+   * `.tile(...).pad(...)`; the front end used to collapse the set and refuse
+   * anything but a singleton.
+   *
+   * Absent when the binding touches no ragged axis — then there is nothing to
+   * name, and naming one is an error the front end reports.
+   */
+  readonly pad?: PadName;
 }
 
 export interface KernelIR {
@@ -126,7 +140,14 @@ export interface KernelIR {
    * TypeScript has no literal type for it. Naming it makes it expressible and
    * ties the obligation to the reduction operator rather than to a value.
    */
+  /**
+   * @deprecated The identity lives on the binding. Kept only so the MLIR backend,
+   * which handles one kernel shape and one identity, keeps compiling; the direct
+   * backend reads `BindingIR.pad`.
+   */
   readonly pad: PadName;
+  /** The body named more than one identity; the MLIR backend cannot express that. */
+  readonly multiPad?: boolean;
 
   // ---- derived, folded once by the front end -------------------------------
   readonly workgroup: readonly [number, number, number];

@@ -74,6 +74,14 @@ export function emitMLIR(k: KernelIR, opts: EmitOptions = {}): string {
   // ---- constants -----------------------------------------------------------
   const ragged = (a: AxisIR) => a.fit === "ragged";
   /** The masked-load fill. Not the accumulator's zero — see the constants below. */
+  // This backend carries ONE identity for the whole kernel. The direct backend
+  // reads it per binding, which is what attention needs; rather than emit the
+  // wrong one here, say so.
+  if (k.multiPad) {
+    throw new Error(
+      `${k.name}: the body names more than one identity element, which the MLIR ` +
+      `backend cannot express. Build with the default (direct) backend.`);
+  }
   const PAD = k.pad === "zero" ? "%f0 " : "%fpad ";
   const anyRagged = [...k.grid, ...k.reduce].some(ragged);
 

@@ -556,16 +556,21 @@ export function compileToIR(entryFile: string): KernelIR {
     }
   }
 
-  // Every padded binding in a kernel must name the same identity today: the IR
-  // carries one. Distinct identities per operand is a real thing (a fused
-  // max-and-sum pass wants both) and is where this goes next.
-  const names = new Set(padded.values());
-  if (names.size > 1) {
-    fail(specNode,
-      `this build supports one identity element per kernel, but ${names.size} were named ` +
-      `(${[...names].join(", ")}). Per-operand identities are not implemented.`);
+  // The identity is the BINDING's, not the kernel's. A kernel legitimately wants
+  // two — attention pads Q·Kᵀ's operands with `zero` so a masked lane annihilates
+  // in the sum, and pads a row max with `negInf` because zero would bias the
+  // maximum toward itself.
+  for (let i = 0; i < bindings.length; i++) {
+    const p = padded.get(bindings[i].name);
+    if (p) bindings[i] = { ...bindings[i], pad: p };
   }
+
+  // The MLIR backend still carries one per kernel, and handles one kernel shape.
+  // Where a body names two, that backend cannot express it and says so rather
+  // than emitting the wrong one.
+  const names = new Set(padded.values());
   const pad: PadName = (names.values().next().value ?? "zero") as PadName;
+  const multiPad = names.size > 1;
 
   // The block sizes the emitter needs, whether or not a tile was declared.
   // matmul blocks two parallel axes and one reduction; softmax blocks one
@@ -575,7 +580,8 @@ export function compileToIR(entryFile: string): KernelIR {
     : { bm: grid[0].block, bn: reduce[0].block, bk: reduce[0].block });
 
   return {
-    name, schedule, dtype, tile, grid, reduce, bindings, maskedLoads, pad, body: rowBody,
+    name, schedule, dtype, tile, grid, reduce, bindings, maskedLoads, pad, multiPad,
+    body: rowBody,
     ...derive(tile, dtype, grid, undefined, schedule),
   };
 }
