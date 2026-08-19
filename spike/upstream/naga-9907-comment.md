@@ -69,11 +69,13 @@ two literals and no snapshot that does not already contain one, and `0.1f` and
 friends are unchanged. `f16` needs nothing — `f16::MAX` is 65504, exactly
 representable as a decimal.
 
-It is orthogonal to the formatting change this issue asks for: after the above,
-`3e38` still prints as its 39-digit expansion.
+It is deliberately narrow, and orthogonal to the formatting change this issue
+asks for: after the above, `3e38` still prints as its 39-digit expansion, so it
+does not constrain whatever you decide about notation. (For what it is worth, a
+plain `{:e}` would touch every literal — `1f` becomes `1e0f` and `0.1f` becomes
+`1e-1f` — so that one looks like a bigger call than this.)
 
-Happy to open a PR for this if you would like it done this way — or for both
-changes together, if you would rather they land at once.
+Happy to open a PR for this piece if you would like it done this way.
 
 <!-- ──────────────────── END COMMENT ───────────────────── -->
 
