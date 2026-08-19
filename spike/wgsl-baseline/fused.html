@@ -1,0 +1,121 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="cache-control" content="no-store">
+<title>fused softmax(A·B)</title>
+<style>
+  body { font: 13px ui-monospace, Menlo, monospace; margin: 2rem; max-width: 62rem; }
+  pre  { white-space: pre-wrap; line-height: 1.5 }
+  .ok { color: #197f19 } .bad { color: #b00 } .warn { color: #b57500 } .dim { color: #777 }
+  button { font: inherit; padding: .3rem .9rem }
+</style>
+<h3>softmax<sub>n</sub>(A·B) — one contraction, then a cross-lane row reduction</h3>
+<p class="dim">
+  The fourth family's G2/G3 (docs/004 R12): row reductions and row operations over
+  a <b>computed fragment</b> rather than a staged tile. <code>accumulate = (m, n)</code>
+  puts n on the x lane, so one row of the fragment lives in all sixteen of them and
+  reducing along n crosses lanes — a barrier, not an expression.
+  N is one block wide, so a row fits a workgroup and this stays clear of G4.
+</p>
+<button id="run">run</button>
+<pre id="log"></pre>
+<script type="module">
+import { initDevice } from "./run.js";
+import { measureInterleaved } from "./measure.js";
+import { makeRunner, typegpuStatus } from "./runners.js";
+import { randomF32, fusedSoftmaxF32, summarize, bitExactCount,
+         maxUlpDiff, rowSums } from "./oracle.js";
+const TYPEGPU = await typegpuStatus();
+
+const logEl = document.getElementById("log");
+const btn = document.getElementById("run");
+let buf = "";
+const write = (s = "") => { buf += s + "\n"; logEl.innerHTML = buf; };
+const f = (x, n = 3) => Number(x).toFixed(n);
+const yieldToPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+
+btn.addEventListener("click", async () => {
+  btn.disabled = true; buf = "";
+  try { await main(); }
+  catch (e) { write(`\n<span class="bad">FAILED</span>  ${e.message}`); }
+  finally { btn.disabled = false; }
+});
+
+async function main() {
+  const ctx = await initDevice();
+  write(`adapter   ${ctx.adapterInfo.vendor} / ${ctx.adapterInfo.architecture}`);
+
+  const man = await (await fetch("./fused-softmax.json")).json();
+  const src = await (await fetch("./fused-softmax.wgsl")).text();
+  const M = man.axes.m, N = man.axes.n, K = man.axes.k, dims = { M, N, K };
+
+  write(`axes      m=${M}  n=${N}  k=${K}   <span class="dim">n is one ${man.tile?.bn ?? 64}-wide block</span>`);
+  write(`derived   workgroup ${man.workgroup.join("x")}  fragment ${man.fragment.join("x")}  ` +
+        `dispatch ${man.dispatch.join("x")}  wgBytes ${man.workgroupBytes}`);
+  const bars = (src.match(/workgroupBarrier\(\)/g) ?? []).length;
+  const scratch = /var<workgroup> scratch/.test(src);
+  write(`shader    ${src.split("\n").length} lines   ${bars} barriers   ` +
+        `cross-lane scratch ${scratch ? "yes" : "<span class='bad'>no</span>"}`);
+  write("");
+
+  const a = randomF32(M * K, 0x1234);
+  const b = randomF32(K * N, 0x5678);
+
+  const BATCH = 8;
+  const built = await makeRunner(ctx, { source: src, manifest: man, inputs: [a, b],
+                                        label: "fused", batch: BATCH });
+  for (const m of built.messages) write(`<span class="warn">${m.type}</span> ${m.message}`);
+  const runners = [built.runner];
+  let tg = null;
+  if (TYPEGPU.available) {
+    tg = (await makeRunner(ctx, { runtime: "typegpu", source: src, manifest: man,
+                                  inputs: [a, b], label: "fused:tg", batch: BATCH })).runner;
+    runners.push(tg);
+  }
+  const stats = await measureInterleaved(runners, { warmup: 6, reps: 15 });
+  const st = stats.get("fused");
+  if (st) {
+    write(`gpu       min ${f(st.minQ, 2)}q  med ${f(st.medianQ, 2)}q  spread ${f(st.spreadQ, 2)}q` +
+          `   <span class="dim">(x${st.batch} per timed pass)</span>`);
+    if (st.belowResolution) write(`          <span class="warn">below resolution — raise BATCH</span>`);
+  }
+  const got = await built.runner.result();
+  if (tg) {
+    const same = bitExactCount(await tg.result(), got);
+    write(`typegpu   bit-exact ${same} / ${got.length}` +
+          (same === got.length ? `  <span class="ok">IDENTICAL</span>`
+                               : `  <span class="bad">DIVERGENT</span>`));
+  }
+  const s0 = summarize(got);
+  write(`output    min ${f(s0.min, 6)}  max ${f(s0.max, 6)}  nans ${s0.nans}`);
+  write("");
+
+  // check 1 — needs no reference at all
+  write("── invariant ──────────────────────────────────────");
+  const sums = rowSums(got, dims);
+  let lo = Infinity, hi = -Infinity;
+  for (const v of sums) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  const invOk = lo > 0.999 && hi < 1.001;
+  write(`every row sums to 1   [${f(lo, 9)}, ${f(hi, 9)}]   ` +
+        (invOk ? `<span class="ok">PASS</span>` : `<span class="bad">FAIL</span>`));
+  write(`<span class="dim">A wrong cross-lane fold would move a whole row and fail this.</span>`);
+  write("");
+
+  // check 2 — against the CPU reference
+  write("── oracle ─────────────────────────────────────────");
+  write(`<span class="dim">CPU softmax(A·B) over ${(2 * M * N * K / 1e6).toFixed(0)}M flops…</span>`);
+  await yieldToPaint();
+  const want = fusedSoftmaxF32(a, b, dims);
+  const exact = bitExactCount(got, want);
+  const { ulp } = maxUlpDiff(got, want);
+  write(`bit-exact ${exact} / ${got.length} (${(100 * exact / got.length).toFixed(2)}%)   max ${ulp} ULP`);
+  write("");
+  // The contraction is not bit-reproducible on the CPU (no FMA in JS) and exp is
+  // inexact, so ULP on the result is the meaningful scale — the same reading
+  // rowwise.html uses for softmax.
+  const pass = ulp <= 8 && invOk;
+  write(pass
+    ? `<span class="ok">PASS</span>  ${ulp} ULP — within what an inexact exp plus a ` +
+      `non-contracted CPU reference explain.`
+    : `<span class="bad">FAIL</span>  ${ulp} ULP is too far to be rounding.`);
+}
+</script>

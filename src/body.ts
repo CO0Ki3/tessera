@@ -38,6 +38,20 @@ export type Expr =
 /** A row-valued expression: one value per row the workgroup owns. */
 export type RowExpr =
   | { readonly k: "acc"; readonly name: string }
+  /**
+   * A row reduction of a computed FRAGMENT rather than of a staged tile.
+   *
+   * The first three families only ever reduced something read from a buffer, one
+   * block per loop iteration, so a reduction was always an update inside a pass.
+   * Reducing a fragment happens outside any loop: the fragment is already whole.
+   *
+   * `init` is the identity the accumulator was filled with, carried so the
+   * emitter knows what an empty lane contributes — and so the compiler pass can
+   * refuse `max` over a fragment whose reduced axis is ragged, where the
+   * annihilating zero `mma` guarantees is the wrong identity.
+   */
+  | { readonly k: "reduceFrag"; readonly op: "max" | "sum";
+      readonly a: FragExpr; readonly init: PadName }
   | { readonly k: "mean"; readonly a: RowExpr }
   | { readonly k: "rstd"; readonly sumSq: RowExpr; readonly mean: RowExpr; readonly eps: number };
 
@@ -53,7 +67,17 @@ export type Update =
 /** A fragment-valued expression: an accumulator, or an elementwise map of one. */
 export type FragExpr =
   | { readonly k: "acc"; readonly name: string }
-  | { readonly k: "map"; readonly op: "relu"; readonly a: FragExpr };
+  | { readonly k: "map"; readonly op: "relu"; readonly a: FragExpr }
+  /**
+   * The same elementwise and row-scaling vocabulary `Expr` has for staged tiles,
+   * over a computed fragment instead. Fusing a row-wise normalisation onto a
+   * contraction needs it — `expTile(subRow(s, mx))` where `s` came out of `mma`
+   * rather than out of memory — and until now a fragment could only be stored or
+   * relu'd, because nothing else was ever done to one.
+   */
+  | { readonly k: "unary"; readonly op: "sq" | "exp"; readonly a: FragExpr }
+  | { readonly k: "rowOp"; readonly op: "sub" | "mul" | "div";
+      readonly a: FragExpr; readonly row: RowExpr };
 
 export type Pass =
   | { readonly k: "reduce"; readonly axis: string; readonly updates: readonly Update[] }
@@ -86,6 +110,8 @@ export type Coord =
 
 export type Step =
   | { readonly k: "derived"; readonly name: string; readonly expr: RowExpr }
+  /** A fragment-valued intermediate, e.g. `const e = expTile(subRow(s, mx));` */
+  | { readonly k: "derivedFrag"; readonly name: string; readonly expr: FragExpr }
   /** A store OUTSIDE any pass, of a whole fragment. matmul ends this way. */
   | { readonly k: "storeFrag"; readonly binding: string;
       readonly coords: readonly Coord[]; readonly value: FragExpr }
@@ -120,6 +146,23 @@ const ROW_COMBINE: Record<string, "sub" | "mul" | "div"> = {
 };
 const REDUCERS: Record<string, "max" | "sum"> = { rowMax: "max", rowSum: "sum" };
 const FRAG_MAP: Record<string, "relu"> = { relu: "relu" };
+
+/**
+ * Does this expression ultimately read a fragment?
+ *
+ * `expTile`, `subRow` and friends apply to a staged tile and to a computed
+ * fragment alike — the spelling is the same and the operand decides. So the
+ * parser follows the chain down to a leaf and asks what the leaf is.
+ */
+function bottomsOutAtFrag(n: ts.Expression, fragNames: ReadonlySet<string>): boolean {
+  if (ts.isIdentifier(n)) return fragNames.has(n.text);
+  if (!ts.isCallExpression(n) || !n.arguments.length) return false;
+  const fn = callee(n);
+  // A REDUCER consumes a fragment and produces a row, so the leaf does not decide
+  // for it: `rowMax(s, …)` bottoms out at a fragment and is a row value anyway.
+  if (fn && fn in REDUCERS) return false;
+  return bottomsOutAtFrag(n.arguments[0], fragNames);
+}
 
 /** `at.<axis>` or a loop variable. Anything else is not a coordinate. */
 export function readCoord(n: ts.Expression): Coord {
@@ -212,6 +255,25 @@ export function parseRow(n: ts.Expression, rowNames: ReadonlySet<string>): RowEx
   }
   if (!ts.isCallExpression(n)) bad(n, `expected a row value, got ${ts.SyntaxKind[n.kind]}`);
   const fn = callee(n);
+  if (fn === "rowMax" || fn === "rowSum") {
+    // `rowMax(frag, rowFill(bm, f32, negInf))` — the accumulator is written
+    // inline because there is nothing to accumulate ACROSS: one fragment, one
+    // reduction. Inside a loop the same call is an update instead, read by
+    // readUpdatesAndStore.
+    const acc = n.arguments[1];
+    if (!acc || !ts.isCallExpression(acc) || callee(acc) !== "rowFill") {
+      bad(acc ?? n,
+        `outside a reduce loop, ${fn}'s accumulator is written inline as ` +
+        `rowFill(rows, dtype, identity) — there is no earlier pass to carry one`);
+    }
+    const id = acc.arguments[2];
+    const nm = id && ts.isIdentifier(id) ? id.text : undefined;
+    if (!nm) bad(id ?? acc, `rowFill's identity must be a named identity`);
+    return {
+      k: "reduceFrag", op: fn === "rowMax" ? "max" : "sum",
+      a: parseFrag(n.arguments[0], rowNames), init: nm as PadName,
+    };
+  }
   if (fn === "meanRow") return { k: "mean", a: parseRow(n.arguments[0], rowNames) };
   if (fn === "rstdRow") {
     const eps = n.arguments[2];
@@ -225,7 +287,8 @@ export function parseRow(n: ts.Expression, rowNames: ReadonlySet<string>): RowEx
       eps: Number(eps.text),
     };
   }
-  return bad(n, `'${fn}' is not a row operation this build knows. Known: meanRow, rstdRow.`);
+  return bad(n, `'${fn}' is not a row operation this build knows. ` +
+                `Known: rowMax, rowSum, meanRow, rstdRow.`);
 }
 
 /**
@@ -253,7 +316,18 @@ export function parseFrag(n: ts.Expression, rowNames: ReadonlySet<string>): Frag
   if (!ts.isCallExpression(n)) bad(n, `expected a fragment, got ${ts.SyntaxKind[n.kind]}`);
   const fn = callee(n);
   if (fn && fn in FRAG_MAP) return { k: "map", op: FRAG_MAP[fn], a: parseFrag(n.arguments[0], rowNames) };
-  return bad(n, `'${fn}' is not a fragment operation. Known: ${Object.keys(FRAG_MAP).join(", ")}.`);
+  if (fn && fn in BLOCK_UNARY) {
+    return { k: "unary", op: BLOCK_UNARY[fn], a: parseFrag(n.arguments[0], rowNames) };
+  }
+  if (fn && fn in ROW_COMBINE) {
+    return {
+      k: "rowOp", op: ROW_COMBINE[fn],
+      a: parseFrag(n.arguments[0], rowNames),
+      row: parseRow(n.arguments[1], rowNames),
+    };
+  }
+  return bad(n, `'${fn}' is not a fragment operation. Known: ` +
+                `${[...Object.keys(FRAG_MAP), ...Object.keys(BLOCK_UNARY), ...Object.keys(ROW_COMBINE)].join(", ")}.`);
 }
 
 export function parseBody(
@@ -264,6 +338,7 @@ export function parseBody(
   if (!ts.isBlock(body)) bad(body, `a kernel body must be a block`);
 
   const accs: Acc[] = [];
+  const fragNames = new Set<string>();
   const steps: Step[] = [];
   const rowNames = new Set<string>();
 
@@ -352,6 +427,12 @@ export function parseBody(
         } else if (callee(init) === "zeros") {
           // A 2-D register fragment. `zeros` names its identity by being zeros.
           accs.push({ name: d.name.text, kind: "frag", init: "zero" });
+          fragNames.add(d.name.text);
+        } else if (bottomsOutAtFrag(init, fragNames)) {
+          // `const e = expTile(subRow(s, mx))` where `s` is a fragment. The same
+          // call spelling applies to tiles, so the operand decides, not the name.
+          steps.push({ k: "derivedFrag", name: d.name.text, expr: parseFrag(init, rowNames) });
+          fragNames.add(d.name.text);
         } else {
           steps.push({ k: "derived", name: d.name.text, expr: parseRow(init, rowNames) });
         }

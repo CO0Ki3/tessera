@@ -170,6 +170,14 @@ async function main() {
       label: "probe D: direct, naga round-trip" },
   ];
 
+  // Every kernel here lands at 6-15 quanta, so a single dispatch is resolved to
+  // about one part in ten and several real questions -- does the TypeGPU layer
+  // cost anything, does a transposed staging read coalesce as well -- came back
+  // "indistinguishable" for lack of resolution rather than for lack of a
+  // difference. Sixteen dispatches per timed pass puts the total near a hundred
+  // quanta and hands back 1/16 of one. See docs/002 2a.
+  const BATCH = 16;
+
   const a = randomF32(M * K, 0x1234);
   const b = randomF32(K * N, 0x5678);
   // Same numbers, stored [N, K] instead of [K, N].
@@ -217,7 +225,7 @@ async function main() {
     try {
       built = await makeRunner(ctx, {
         runtime: v.runtime, source, manifest: { ...man, entryPoint: entry },
-        inputs: v.transposedB ? [a, bT] : [a, b], label: v.key,
+        inputs: v.transposedB ? [a, bT] : [a, b], label: v.key, batch: BATCH,
       });
     } catch (e) {
       write(`  ${v.label.padEnd(34)} <span class="bad">failed</span> ${e.message}`);
@@ -262,21 +270,22 @@ async function main() {
   const cmp = (aKey, bKey) => {
     const a = q(aKey), b = q(bKey);
     if (!a || !b) return null;
-    // One quantum is the floor, but a row whose own samples span three quanta
-    // has not established anything at two. Whichever is larger is the yardstick.
-    const noise = Math.max(1, stats.get(aKey).spreadQ, stats.get(bKey).spreadQ);
+    // The floor is the RESOLUTION, which batching moved from one quantum to
+    // 1/BATCH of one — but a row whose own samples span more than that has not
+    // established anything below its own spread. Whichever is larger.
+    const noise = Math.max(1 / BATCH, stats.get(aKey).spreadQ, stats.get(bKey).spreadQ);
     const resolvable = Math.abs(a - b) > noise;
     return { a, b, noise, resolvable, text: resolvable
       ? `${f(a / b, 2)}x`
       : `<span class="dim">indistinguishable (\u0394${Math.abs(a - b)}q, noise ${noise}q)</span>` };
   };
-  write(`  ${"kernel".padEnd(34)}  ${"min".padStart(5)} ${"med".padStart(5)} ${"max".padStart(5)}   spread   GFLOP/s`);
+  write(`  ${"kernel".padEnd(34)}  ${"min".padStart(6)} ${"med".padStart(6)} ${"max".padStart(6)}   spread   GFLOP/s`);
   for (const { v } of runners) {
     const st = stats.get(v.key);
     if (!st) { write(`  ${v.label.padEnd(34)}  (no timestamps)`); continue; }
     const g = 2 * M * N * K / (st.minNs * 1e-9) / 1e9;
-    write(`  ${v.label.padEnd(34)}  ${String(st.minQ).padStart(5)} ${String(st.medianQ).padStart(5)} ` +
-          `${String(st.maxQ).padStart(5)}   ${String(st.spreadQ).padStart(6)}   ${f(g, 1).padStart(7)}` +
+    write(`  ${v.label.padEnd(34)}  ${f(st.minQ, 2).padStart(6)} ${f(st.medianQ, 2).padStart(6)} ` +
+          `${f(st.maxQ, 2).padStart(6)}   ${f(st.spreadQ, 2).padStart(6)}   ${f(g, 1).padStart(7)}` +
           (st.belowResolution ? `  <span class="warn">below resolution</span>` : "") +
           (st.spreadQ > st.minQ * 0.5 ? `  <span class="warn">noisy</span>` : ""));
   }
@@ -317,7 +326,7 @@ async function main() {
   if (q("typegpu") && q("direct")) {
     const dq = q("typegpu") - q("direct");
     write(`TypeGPU resource layer costs   ${cmp("typegpu", "direct").text}   ` +
-          `<span class="dim">(${q("direct")}q \u2192 ${q("typegpu")}q, ${dq >= 0 ? "+" : ""}${dq}q)</span>`);
+          `<span class="dim">(${f(q("direct"), 2)}q \u2192 ${f(q("typegpu"), 2)}q, ${dq >= 0 ? "+" : ""}${dq}q)</span>`);
     write(Math.abs(dq) <= 1
       ? `  <span class="ok">free</span> \u2014 same WGSL, same dispatch, same timed code, so the ` +
         `\u00b11q\n  is the instrument, not the layer. The resources are simply allocated by a ` +
@@ -333,17 +342,17 @@ async function main() {
     // "free": one quantum of noise on a six-quantum kernel cannot resolve a 15%
     // difference. Batching would, the way rowwise.html does it.
     write(`A\u00b7B\u1d40 vs A\u00b7B           ${cmp("bt", "direct").text}   ` +
-          `<span class="dim">(${q("direct")}q \u2192 ${q("bt")}q; transposed staging read)</span>`);
+          `<span class="dim">(${f(q("direct"), 2)}q \u2192 ${f(q("bt"), 2)}q; transposed staging read)</span>`);
     write("");
   }
   if (q("mlirNoOpt") && q("mlir")) {
     const d = q("mlirNoOpt") - q("mlir");
     write(`canonicalize+cse+licm bought   ${cmp("mlirNoOpt", "mlir").text}   ` +
-          `<span class="dim">(${q("mlirNoOpt")}q → ${q("mlir")}q, ${d >= 0 ? "+" : ""}${d}q)</span>`);
+          `<span class="dim">(${f(q("mlirNoOpt"), 2)}q → ${f(q("mlir"), 2)}q, ${d >= 0 ? "+" : ""}${d}q)</span>`);
   }
   if (q("mlirUnroll") && q("mlir")) {
     write(`unrolling the k loop bought    ${cmp("mlir", "mlirUnroll").text}   ` +
-          `<span class="dim">(${q("mlir")}q → ${q("mlirUnroll")}q)</span>`);
+          `<span class="dim">(${f(q("mlir"), 2)}q → ${f(q("mlirUnroll"), 2)}q)</span>`);
     if (q("hand")) {
       write(`  unrolled vs hand-written     ${f(q("mlirUnroll") / q("hand"), 2)}x`);
     }
@@ -351,7 +360,7 @@ async function main() {
   if (q("roundtrip") && q("direct")) {
     write("");
     write(`naga round-trip cost           ${cmp("roundtrip", "direct").text}   ` +
-          `<span class="dim">(${q("direct")}q → ${q("roundtrip")}q; gains loop{}/continuing{}, ` +
+          `<span class="dim">(${f(q("direct"), 2)}q → ${f(q("roundtrip"), 2)}q; gains loop{}/continuing{}, ` +
           `no phi, no bitcast)</span>`);
     if (q("roundtrip") <= q("direct") + 1) {
       write(`  <span class="ok">the loop form is innocent</span> — the cost is the 144 phi ` +

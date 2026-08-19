@@ -161,7 +161,15 @@ export function emitWGSL(k: KernelIR): string {
   }
   P();
   for (const o of staged) P(`var<workgroup> ${stageName(o.binding)} : array<${ty}, ${o.stagedElements}>;`);
-  if (!staged.length && plan.lanes.needsCombine) {
+  const reducesFrag = body.steps.some((x) => x.k === "derived" && x.expr.k === "reduceFrag");
+  if (reducesFrag) {
+    // rows-in-the-tile x lanes-along-the-reduced-axis. Staged operands keep their
+    // own buffers; this is additional, and the two together must still fit the
+    // 16384 B floor.
+    const [row, red] = slices;
+    P(`var<workgroup> scratch : array<${ty}, ${laneW[row.lane] * row.slice * laneW[red.lane]}>;` +
+      `   // tile rows x lanes along ${red.axis}`);
+  } else if (!staged.length && plan.lanes.needsCombine) {
     P(`var<workgroup> scratch : array<${ty}, ${plan.workgroupElements}>;   // fragment x lanes`);
   }
   P();
@@ -330,6 +338,58 @@ export function emitWGSL(k: KernelIR): string {
     P();
   }
 
+  /**
+   * Reduce a fragment along its non-row axis into a row vector.
+   *
+   * This cannot be an expression, which is why `rowExpr` refuses it: the
+   * fragment is spread across lanes, so the reduction crosses them and needs a
+   * barrier. `accumulate = (m, n)` puts n on the x lane, so one row lives in all
+   * 16 x lanes at four columns each, and reducing along n is two steps — fold the
+   * four columns this invocation holds, then fold across the lanes.
+   *
+   * The same shape as emitCombine, which folds a contraction split across lanes,
+   * but not the same code: there the accumulator is one-dimensional and indexed
+   * by the row cell, here the fragment is two-dimensional and only one of its
+   * axes is being folded.
+   */
+  function emitReduceFrag(name: string, r: Extract<RowExpr, { k: "reduceFrag" }>): void {
+    if (slices.length !== 2) {
+      throw new Error(`${k.name}: reducing a fragment needs two accumulate axes, got ${slices.length}`);
+    }
+    const [row, red] = slices;
+    const width = laneW[red.lane];
+    const rowLane = row.lane === "x" ? "tx" : "ty";
+    const redLane = red.lane === "x" ? "tx" : "ty";
+    const init = r.op === "max" ? PAD_LITERAL.negInf : "0.0";
+    const fold = (acc: string, v: string) =>
+      r.op === "max" ? `${acc} = max(${acc}, ${v});` : `${acc} = ${acc} + ${v};`;
+    const slot = (rc: number, lane: string) =>
+      `scratch[(${rowLane} * ${u(row.slice)} + ${u(rc)}) * ${u(width)} + ${lane}]`;
+
+    P(`var ${name} : array<${ty}, ${row.slice}>;`, 1);
+    for (let rc = 0; rc < row.slice; rc++) {
+      P(`{`, 1);
+      P(`var ${T_("p")} = ${init};`, 2);
+      for (let nc = 0; nc < red.slice; nc++) {
+        P(fold(T_("p"), fragExpr(r.a, { [row.axis]: rc, [red.axis]: nc })), 2);
+      }
+      P(`${slot(rc, redLane)} = ${T_("p")};`, 2);
+      P(`}`, 1);
+    }
+    P(`workgroupBarrier();`, 1);
+    for (let rc = 0; rc < row.slice; rc++) {
+      P(`{`, 1);
+      P(`var ${T_("r")} = ${init};`, 2);
+      P(`for (var ${T_("j")} : u32 = 0u; ${T_("j")} < ${u(width)}; ${T_("j")} = ${T_("j")} + 1u) {`, 2);
+      P(fold(T_("r"), slot(rc, T_("j"))), 3);
+      P(`}`, 2);
+      P(`${name}[${u(rc).slice(0, -1)}] = ${T_("r")};`, 2);
+      P(`}`, 1);
+    }
+    P(`workgroupBarrier();`, 1);
+    P();
+  }
+
   /** A block-valued expression at one fragment cell. */
   function blockExpr(e: Expr, c: Record<string, number>): string {
     switch (e.k) {
@@ -345,7 +405,10 @@ export function emitWGSL(k: KernelIR): string {
   }
   function rowExpr(r: RowExpr, c: Record<string, number>): string {
     switch (r.k) {
-      case "acc":  return `${r.name}[${cellIndex(c)}]`;
+      case "acc":  return `${r.name}[${c[slices[0].axis]}]`;
+      case "reduceFrag": throw new Error(
+        `${k.name}: a fragment reduction is materialised by emitReduceFrag, ` +
+        `not read as an expression — it needs a barrier`);
       case "mean": return `(${rowExpr(r.a, c)} / ${contract.extent}.0)`;
       case "rstd": {
         const mu = rowExpr(r.mean, c);
@@ -354,13 +417,31 @@ export function emitWGSL(k: KernelIR): string {
     }
   }
   function fragExpr(f: FragExpr, c: Record<string, number>): string {
-    return f.k === "acc" ? `${f.name}[${cellIndex(c)}]`
-      : `select(0.0, ${fragExpr(f.a, c)}, ${fragExpr(f.a, c)} > 0.0)`;
+    switch (f.k) {
+      case "acc":   return `${f.name}[${cellIndex(c)}]`;
+      case "map":   return `select(0.0, ${fragExpr(f.a, c)}, ${fragExpr(f.a, c)} > 0.0)`;
+      case "unary": {
+        const a = fragExpr(f.a, c);
+        return f.op === "exp" ? `exp(${a})` : `(${a} * ${a})`;
+      }
+      case "rowOp": {
+        const a = fragExpr(f.a, c), r = rowExpr(f.row, c);
+        return f.op === "sub" ? `(${a} - ${r})` : f.op === "mul" ? `(${a} * ${r})` : `(${a} / ${r})`;
+      }
+    }
   }
 
   // ---- derived row values, then the store ------------------------------------
   for (const st of body.steps) {
+    if (st.k === "derivedFrag") {
+      // Elementwise over the invocation's own cells: no lane crosses, no barrier.
+      P(`var ${st.name} : array<${ty}, ${frag}>;`, 1);
+      for (const c of cells) P(`${st.name}[${cellIndex(c)}] = ${fragExpr(st.expr, c)};`, 1);
+      P();
+      continue;
+    }
     if (st.k !== "derived") continue;
+    if (st.expr.k === "reduceFrag") { emitReduceFrag(st.name, st.expr); continue; }
     P(`var ${st.name} : array<${ty}, ${frag}>;`, 1);
     for (const c of cells) P(`${st.name}[${cellIndex(c)}] = ${rowExpr(st.expr, c)};`, 1);
     P();

@@ -65,6 +65,18 @@ fail. Regenerate the shaders with <code>npm run demo</code> before reloading.</p
     (softmax's rows sum to 1, layernorm's have mean 0 and variance 1), then a CPU oracle on
     the error scale the operations actually permit.</div>
 </a>
+<a class="card" href="./fused.html">
+  <span class="p">/fused.html</span>
+  <span class="t">a contraction, then a reduction across lanes</span>
+  <div class="d">softmax<sub>n</sub>(A&middot;B). The first kernel to reduce a
+    <b>computed fragment</b> rather than a tile read from memory — and because
+    <code>accumulate = (m, n)</code> puts n on the x lane, one row of that fragment
+    lives in all sixteen of them, so the fold crosses lanes and needs a barrier
+    rather than an expression.</div>
+  <div class="v"><b>Verifies</b> twice: every row sums to 1, which needs no reference
+    and which a wrong cross-lane fold would break outright, and ULP against a CPU
+    softmax(A&middot;B).</div>
+</a>
 
 <footer>
   Reading order, if this is the first visit: <b>matmul</b> for what the compiler emits and

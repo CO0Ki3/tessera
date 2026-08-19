@@ -441,3 +441,34 @@ export function transposeF32(src, rows, cols) {
   }
   return out;
 }
+
+/**
+ * softmax_n(A · B) in f32, the reference for examples/fused-softmax.kernel.ts.
+ *
+ * Two things this deliberately does NOT do. It does not fuse: the matmul
+ * completes into a full row before the softmax starts, where the kernel folds
+ * across lanes as it goes. And it does not contract the multiply-add — JS has no
+ * FMA — so the GPU is expected to be close rather than bit-identical, the same
+ * situation as the plain matmul, and the same error bound applies to the
+ * contraction half.
+ *
+ * `dims.N` is one block wide by construction, so a row fits one workgroup and the
+ * softmax is well defined inside it.
+ */
+export function fusedSoftmaxF32(a, b, { M, N, K }) {
+  const out = new Float32Array(M * N);
+  const row = new Float32Array(N);
+  for (let m = 0; m < M; m++) {
+    for (let n = 0; n < N; n++) {
+      let acc = 0;
+      for (let k = 0; k < K; k++) acc = Math.fround(acc + Math.fround(a[m * K + k] * b[k * N + n]));
+      row[n] = acc;
+    }
+    let mx = -Infinity;
+    for (let n = 0; n < N; n++) mx = Math.max(mx, row[n]);
+    let sum = 0;
+    for (let n = 0; n < N; n++) { row[n] = Math.fround(Math.exp(Math.fround(row[n] - mx))); sum = Math.fround(sum + row[n]); }
+    for (let n = 0; n < N; n++) out[m * N + n] = Math.fround(row[n] / sum);
+  }
+  return out;
+}

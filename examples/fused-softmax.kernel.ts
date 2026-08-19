@@ -9,13 +9,16 @@
 // test of the vocabulary (G2, G3) and not of G4, which is contraction
 // composition and a separate problem.
 //
-// Written before finding out what is admitted. Whatever the gate refuses is the
-// work list.
+// What it took: the row ops grew Frag overloads (the type half of G2/G3), the
+// parser learned a fragment reduction as a derived value and a fragment-valued
+// intermediate, and the emitter grew emitReduceFrag — a cross-lane fold, because
+// `accumulate = (m, n)` puts n on the x lane and one row therefore lives in all
+// sixteen of them.
 
 import {
   axis, tiling, kernel, input, output, f32,
   zeros, mma, rowFill, rowMax, rowSum, subRow, divRow, expTile, negInf, zero,
-} from "../../src/tessera";
+} from "../src/tessera";
 
 const T = tiling(f32, 64, 64, 16);
 
