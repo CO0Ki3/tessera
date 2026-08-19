@@ -1,0 +1,75 @@
+{
+  "name": "attention_f32",
+  "entryPoint": "attention_f32",
+  "backend": "wgsl",
+  "schedule": "matmul",
+  "dtype": "f32",
+  "workgroup": [
+    16,
+    16,
+    1
+  ],
+  "dispatch": [
+    4,
+    32,
+    1
+  ],
+  "fragment": [
+    2,
+    2
+  ],
+  "workgroupBytes": 4096,
+  "axes": {
+    "m": 1024,
+    "d": 64,
+    "n": 768
+  },
+  "bindings": [
+    {
+      "name": "q",
+      "binding": 0,
+      "group": 0,
+      "mode": "read",
+      "elements": 65536,
+      "axes": [
+        "m",
+        "d"
+      ]
+    },
+    {
+      "name": "k",
+      "binding": 1,
+      "group": 0,
+      "mode": "read",
+      "elements": 49152,
+      "axes": [
+        "n",
+        "d"
+      ]
+    },
+    {
+      "name": "v",
+      "binding": 2,
+      "group": 0,
+      "mode": "read",
+      "elements": 49152,
+      "axes": [
+        "n",
+        "d"
+      ]
+    },
+    {
+      "name": "o",
+      "binding": 3,
+      "group": 0,
+      "mode": "write",
+      "elements": 65536,
+      "axes": [
+        "m",
+        "d"
+      ]
+    }
+  ],
+  "maskedLoads": [],
+  "pad": "zero"
+}

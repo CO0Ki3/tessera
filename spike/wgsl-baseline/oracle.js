@@ -493,3 +493,51 @@ export function fusedSoftmaxF32(a, b, { M, N, K }) {
   }
   return { y: out, maxArg };
 }
+
+/**
+ * softmax_n(Q·Kᵀ)·V in f32 — the reference for examples/attention.kernel.ts.
+ *
+ * Contracts both matmuls, because the adapter fuses `acc + a*b` into one rounding
+ * and a reference that does not leaves the scores off by enough for `exp` to turn
+ * into hundreds of ULP. That mistake has been made twice in this project already;
+ * see the note on fusedSoftmaxF32.
+ *
+ * `maxArg` comes back for the same reason it does there: a GPU computes `exp(x)`
+ * as `exp2(x · log2e)`, and rounding that product to f32 costs about |x| ULP of
+ * the result — so the error scale is the largest argument reaching `exp`, not a
+ * constant.
+ *
+ * It does not fuse and it does not block. The kernel accumulates O over blocks of
+ * thirty-two n and sums thirty-two values within each; this sums 768 linearly.
+ * That difference is association, worth a few ULP, and it is deliberate — an
+ * oracle that mirrors the schedule stops being an independent check of it.
+ */
+export function attentionF32(q, k, v, { M, N, D }) {
+  const out = new Float32Array(M * D);
+  const row = new Float32Array(N);
+  const fr = Math.fround;
+  let maxArg = 0;
+  for (let m = 0; m < M; m++) {
+    for (let n = 0; n < N; n++) {
+      let acc = 0;
+      for (let d = 0; d < D; d++) acc = fr(acc + q[m * D + d] * k[n * D + d]);
+      row[n] = acc;
+    }
+    let mx = -Infinity;
+    for (let n = 0; n < N; n++) mx = Math.max(mx, row[n]);
+    let sum = 0;
+    for (let n = 0; n < N; n++) {
+      const arg = fr(row[n] - mx);
+      if (-arg > maxArg) maxArg = -arg;
+      row[n] = fr(Math.exp(arg));
+      sum = fr(sum + row[n]);
+    }
+    for (let n = 0; n < N; n++) row[n] = fr(row[n] / sum);
+    for (let d = 0; d < D; d++) {
+      let acc = 0;
+      for (let n = 0; n < N; n++) acc = fr(acc + row[n] * v[n * D + d]);
+      out[m * D + d] = acc;
+    }
+  }
+  return { y: out, maxArg };
+}

@@ -4,15 +4,22 @@
 //   P[m,n] = softmax_n(S[m,:])
 //   O[m,d] = sum_n P[m,n] * V[n,d]        contract n, accumulate (m, d)
 //
-// The two contractions accumulate over DIFFERENT axis sets, and that is what is
-// left of G4. P comes out of the first laid out with n on the x lane — four of
-// the sixty-four n values per invocation — and the second contracts along n, so
-// it needs all of them. The fragment has to be redistributed.
+// The two contractions accumulate over DIFFERENT axis sets, which is what G4 was
+// about. P comes out of the first laid out with n on the x lane — two of this
+// block's thirty-two n values per invocation — and the second sums along n, so it
+// needs all of them. The fragment is redistributed through workgroup memory,
+// exactly as an operand read from a buffer is staged, with registers as the
+// source. After that the block is an ordinary matmul.
+//
+// The scores are recomputed for every block of d, which is wasteful and correct:
+// each workgroup owns one (m, d) block of the output and needs the full softmax
+// over n to produce it. Flash attention's online rescaling is what removes the
+// recomputation, and it is not what this kernel does.
 
 import {
   axis, tiling, kernel, input, output, f32,
   zeros, mma, rowFill, rowMax, rowSum, subRow, divRow, expTile, negInf, zero,
-} from "../../src/tessera";
+} from "../src/tessera";
 
 // 32x32x16, not this project's usual 64x64x16. Attention has to stage the score
 // fragment as well as q, k and v, and a bm x bn fragment at 64x64 is 16384 B on

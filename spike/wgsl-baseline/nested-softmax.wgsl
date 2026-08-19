@@ -11,7 +11,7 @@
 
 var<workgroup> stage_a : array<f32, 1024>;
 var<workgroup> stage_b : array<f32, 1024>;
-var<workgroup> scratch : array<f32, 1024>;   // fragment x lanes
+var<workgroup> scratch : array<f32, 1024>;   // tile rows x lanes along the folded axis
 
 @compute @workgroup_size(16, 16, 1)
 fn nested_softmax_f32(@builtin(workgroup_id)        wg  : vec3<u32>,

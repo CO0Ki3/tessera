@@ -67,6 +67,18 @@ fail. Regenerate the shaders with <code>npm run demo</code> before reloading.</p
     and which a wrong cross-lane fold would break outright, and ULP against a CPU
     softmax(A&middot;B).</div>
 </a>
+<a class="card" href="./attention.html">
+  <span class="p">/attention.html</span>
+  <span class="t">two contractions, and a fragment between them</span>
+  <div class="d">softmax<sub>n</sub>(Q&middot;K&#7488;)&middot;V. The two contractions accumulate
+    over <b>different axis sets</b>, so the scores come out with n spread across the
+    x lanes and the second contraction sums along n &mdash; two of thirty-two values
+    per invocation. The fragment is <b>redistributed</b> through workgroup memory,
+    exactly as a buffer operand is staged, with registers as the source.</div>
+  <div class="v"><b>Verifies</b> against a CPU <code>softmax(Q&middot;K&#7488;)&middot;V</code>, on a
+    bound that scales with the argument reaching <code>exp</code> rather than a flat
+    ULP count.</div>
+</a>
 
 <footer>
   Reading order, if this is the first visit: <b>matmul</b> for what the compiler emits and

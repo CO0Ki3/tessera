@@ -1,0 +1,119 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="cache-control" content="no-store">
+<title>attention</title>
+<link rel="stylesheet" href="./harness.css">
+
+<h1><a href="./" style="color:inherit">tessera</a> — two contractions, and a fragment between them</h1>
+<p class="sub">
+  <code>softmax<sub>n</sub>(Q&middot;K&#7488;)&middot;V</code>. The two contractions accumulate over
+  <b>different axis sets</b> &mdash; <code>(m, n)</code> then <code>(m, d)</code> &mdash; so
+  <code>P</code> comes out of the first with <code>n</code> spread across the x lanes and the second
+  sums along <code>n</code>. Two of thirty-two values per invocation: read in place, each would sum a
+  sixteenth of its row.<br>
+  So <code>P</code> is <b>redistributed</b> through workgroup memory, exactly as an operand read from
+  a buffer is staged, with registers as the source. See <code>docs/004-falsification.md</code> R12, G4.
+</p>
+
+<button id="run">Run</button>
+<pre id="log">Ready.</pre>
+<script type="module">
+import { initDevice } from "./run.js";
+import { attachCopyButton } from "./copy.js";
+import { measureInterleaved } from "./measure.js";
+import { makeRunner, typegpuStatus } from "./runners.js";
+import { randomF32, attentionF32, summarize, bitExactCount, maxUlpDiff } from "./oracle.js";
+const TYPEGPU = await typegpuStatus();
+
+const logEl = document.getElementById("log");
+const btn = document.getElementById("run");
+attachCopyButton(btn, logEl);
+let buf = "";
+const write = (s = "") => { buf += s + "\n"; logEl.innerHTML = buf; };
+const f = (x, n = 3) => Number(x).toFixed(n);
+const yieldToPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+
+btn.addEventListener("click", async () => {
+  btn.disabled = true; buf = "";
+  try { await main(); }
+  catch (e) { write(`\n<span class="bad">FAILED</span>  ${e.message}`); }
+  finally { btn.disabled = false; }
+});
+
+async function main() {
+  const ctx = await initDevice();
+  write(`adapter   ${ctx.adapterInfo.vendor} / ${ctx.adapterInfo.architecture}`);
+
+  const man = await (await fetch("./attention.json")).json();
+  const src = await (await fetch("./attention.wgsl")).text();
+  const M = man.axes.m, N = man.axes.n, D = man.axes.d, dims = { M, N, D };
+
+  write(`axes      m=${M}  n=${N}  d=${D}`);
+  write(`derived   workgroup ${man.workgroup.join("x")}  fragment ${man.fragment.join("x")}  ` +
+        `dispatch ${man.dispatch.join("x")}`);
+  const wg = [...src.matchAll(/var<workgroup> (\w+) : array<f32, (\d+)>/g)]
+    .map((m) => [m[1], Number(m[2]) * 4]);
+  const total = wg.reduce((n, [, b]) => n + b, 0);
+  write(`workgroup ${wg.map(([n2, b]) => `${n2} ${b}B`).join("  ")}`);
+  write(`          ${total} B of the 16384 B floor` +
+        (total <= 16384 ? `  <span class="ok">fits</span>` : `  <span class="bad">OVER</span>`));
+  write(`shader    ${src.split("\n").length} lines   ` +
+        `${(src.match(/workgroupBarrier\(\)/g) ?? []).length} barriers   ` +
+        `redistribution ${/t_pstage/.test(src) ? "yes" : "<span class='bad'>no</span>"}`);
+  write("");
+
+  const q = randomF32(M * D, 0x11);
+  const k = randomF32(N * D, 0x22);
+  const v = randomF32(N * D, 0x33);
+
+  const BATCH = 2;
+  const built = await makeRunner(ctx, { source: src, manifest: man, inputs: [q, k, v],
+                                        label: "attn", batch: BATCH });
+  for (const m of built.messages) write(`<span class="warn">${m.type}</span> ${m.message}`);
+  const runners = [built.runner];
+  let tg = null;
+  if (TYPEGPU.available) {
+    tg = (await makeRunner(ctx, { runtime: "typegpu", source: src, manifest: man,
+                                  inputs: [q, k, v], label: "attn:tg", batch: BATCH })).runner;
+    runners.push(tg);
+  }
+  const st = (await measureInterleaved(runners, { warmup: 3, reps: 8 })).get("attn");
+  if (st) write(`gpu       min ${f(st.minQ, 2)}q  med ${f(st.medianQ, 2)}q  spread ${f(st.spreadQ, 2)}q` +
+                `   <span class="dim">(x${st.batch} per timed pass)</span>`);
+
+  const got = await built.runner.result();
+  if (tg) {
+    const same = bitExactCount(await tg.result(), got);
+    write(`typegpu   bit-exact ${same} / ${got.length}` +
+          (same === got.length ? `  <span class="ok">IDENTICAL</span>`
+                               : `  <span class="bad">DIVERGENT</span>`));
+  }
+  const s0 = summarize(got);
+  write(`output    min ${f(s0.min, 6)}  max ${f(s0.max, 6)}  nans ${s0.nans}  zeros ${s0.zeros}`);
+  write("");
+
+  write("── oracle ─────────────────────────────────────────");
+  write(`<span class="dim">CPU softmax(Q·Kᵀ)·V over ${(4 * M * N * D / 1e6).toFixed(0)}M flops…</span>`);
+  await yieldToPaint();
+  const { y: want, maxArg } = attentionF32(q, k, v, dims);
+  const exact = bitExactCount(got, want);
+  const { ulp } = maxUlpDiff(got, want);
+  write(`bit-exact ${exact} / ${got.length} (${(100 * exact / got.length).toFixed(2)}%)   max ${ulp} ULP`);
+  write("");
+
+  // Two contributions, and the first dominates: exp's own error grows with its
+  // argument (a GPU computes exp(x) as exp2(x·log2e), whose f32 product rounding
+  // costs about |x| ULP), and the O accumulation associates differently — the
+  // kernel sums thirty-two n per block, the oracle 768 linearly. Same reading as
+  // fused.html; a flat bound would be the wrong criterion here too.
+  const bound = Math.ceil(maxArg) + 16;
+  const pass = ulp <= bound;
+  write(`bound     ${bound} ULP   <span class="dim">= ceil(max |s - rowmax|) = ${maxArg.toFixed(1)}, ` +
+        `plus 16 for the two accumulations and the divide</span>`);
+  write(pass
+    ? `<span class="ok">PASS</span>  ${ulp} ULP against ${bound}. The redistribution moved the ` +
+      `fragment without losing anything.`
+    : `<span class="bad">FAIL</span>  ${ulp} ULP exceeds ${bound}; more than exp at this argument ` +
+      `and two accumulation orders explain.`);
+}
+</script>
