@@ -265,6 +265,35 @@ console.log("\nharness artifacts");
   }
 }
 
+// ---- tileT inside a nested pass -------------------------------------------
+// The flat case above is not enough. collectTransposed walked only top-level
+// steps, so `k.tileT(d, n)` inside attention's inner contraction went unrecorded:
+// the emitter staged k in memory order while the contraction indexed it in tile
+// order. The kernel still compiled, still validated, and came out 0.7% wrong --
+// a scrambled score matrix produces a plausible convex combination after a
+// softmax. Only the ULP check found it.
+//
+// So: attention stages k over the N block (32), not the D block (16), and its
+// load address puts the memory-major axis first.
+console.log("\ntransposed read inside a nested pass");
+try {
+  execFileSync("npx", ["tsx", "src/cli.ts", "build", "examples/attention.kernel.ts",
+                       "-o", out], { stdio: "pipe" });
+  const wgsl = readFileSync(join(out, "attention_f32.wgsl"), "utf8");
+  const block = wgsl.split("stage_k[t_i]")[0].split("for (var t_i").pop() ?? "";
+  const div = block.match(/t_r = t_i \/ (\d+)u/)?.[1];
+  const addr = block.match(/let off\d+ = (t_g[rc]) \* \d+u \+ (t_g[rc]);/);
+  if (div !== "32") {
+    bad(`k is staged over a block of ${div}, not the n block of 32 — tileT was not seen`);
+  } else if (!addr || addr[1] !== "t_gc") {
+    bad(`k's load address leads with ${addr?.[1]}; a transposed read leads with t_gc`);
+  } else {
+    ok(`k staged over the n block and addressed ${addr[1]}*stride+${addr[2]} — tileT honoured inside the nest`);
+  }
+} catch (e) {
+  bad(`attention:\n${e.stdout?.toString() ?? e.message}`);
+}
+
 // ---- a contraction inside another's loop ----------------------------------
 // nested-softmax computes softmax(A.B) with N twelve blocks wide, so the score
 // fragment cannot be held whole and is recomputed per block -- one contraction

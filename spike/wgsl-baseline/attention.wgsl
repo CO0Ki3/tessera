@@ -52,26 +52,26 @@ fn attention_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       stage_q[t_i] = q[off0];
     }
     for (var t_i : u32 = tid; t_i < 512u; t_i = t_i + 256u) {
-      let t_r = t_i / 16u;
-      let t_cc = t_i % 16u;
-      let t_gr = base_n + t_r;
-      let t_gc = t_cb_d + t_cc;
-      let off1 = t_gr * 64u + t_gc;
+      let t_r = t_i / 32u;
+      let t_cc = t_i % 32u;
+      let t_gr = t_cb_d + t_r;
+      let t_gc = base_n + t_cc;
+      let off1 = t_gc * 64u + t_gr;
       stage_k[t_i] = k[off1];
     }
     workgroupBarrier();
 
     let t_base_q_0 = (ty * 2u + 0u) * 16u;
     let t_base_q_1 = (ty * 2u + 1u) * 16u;
-    let t_base_k_0 = (tx * 2u + 0u) * 16u;
-    let t_base_k_1 = (tx * 2u + 1u) * 16u;
+    let t_base_k_0 = tx * 2u + 0u;
+    let t_base_k_1 = tx * 2u + 1u;
     for (var t_s : u32 = 0u; t_s < 16u; t_s = t_s + 1u) {
       let t_lc = t_s;
       let t_ci = t_cb_d + t_lc;
         let v_q_0 = stage_q[t_base_q_0 + t_lc];
         let v_q_1 = stage_q[t_base_q_1 + t_lc];
-        let v_k_0 = stage_k[t_base_k_0 + t_lc];
-        let v_k_1 = stage_k[t_base_k_1 + t_lc];
+        let v_k_0 = stage_k[t_lc * 32u + t_base_k_0];
+        let v_k_1 = stage_k[t_lc * 32u + t_base_k_1];
         s[0] = s[0] + v_q_0 * v_k_0;
         s[1] = s[1] + v_q_0 * v_k_1;
         s[2] = s[2] + v_q_1 * v_k_0;
@@ -127,26 +127,26 @@ fn attention_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       stage_q[t_i] = q[off2];
     }
     for (var t_i : u32 = tid; t_i < 512u; t_i = t_i + 256u) {
-      let t_r = t_i / 16u;
-      let t_cc = t_i % 16u;
-      let t_gr = base_n + t_r;
-      let t_gc = t_cb_d + t_cc;
-      let off3 = t_gr * 64u + t_gc;
+      let t_r = t_i / 32u;
+      let t_cc = t_i % 32u;
+      let t_gr = t_cb_d + t_r;
+      let t_gc = base_n + t_cc;
+      let off3 = t_gc * 64u + t_gr;
       stage_k[t_i] = k[off3];
     }
     workgroupBarrier();
 
     let t_base_q_0 = (ty * 2u + 0u) * 16u;
     let t_base_q_1 = (ty * 2u + 1u) * 16u;
-    let t_base_k_0 = (tx * 2u + 0u) * 16u;
-    let t_base_k_1 = (tx * 2u + 1u) * 16u;
+    let t_base_k_0 = tx * 2u + 0u;
+    let t_base_k_1 = tx * 2u + 1u;
     for (var t_s : u32 = 0u; t_s < 16u; t_s = t_s + 1u) {
       let t_lc = t_s;
       let t_ci = t_cb_d + t_lc;
         let v_q_0 = stage_q[t_base_q_0 + t_lc];
         let v_q_1 = stage_q[t_base_q_1 + t_lc];
-        let v_k_0 = stage_k[t_base_k_0 + t_lc];
-        let v_k_1 = stage_k[t_base_k_1 + t_lc];
+        let v_k_0 = stage_k[t_lc * 32u + t_base_k_0];
+        let v_k_1 = stage_k[t_lc * 32u + t_base_k_1];
         s[0] = s[0] + v_q_0 * v_k_0;
         s[1] = s[1] + v_q_0 * v_k_1;
         s[2] = s[2] + v_q_1 * v_k_0;
@@ -202,26 +202,26 @@ fn attention_f32(@builtin(workgroup_id)        wg  : vec3<u32>,
       stage_q[t_i] = q[off4];
     }
     for (var t_i : u32 = tid; t_i < 512u; t_i = t_i + 256u) {
-      let t_r = t_i / 16u;
-      let t_cc = t_i % 16u;
-      let t_gr = base_n + t_r;
-      let t_gc = t_cb_d + t_cc;
-      let off5 = t_gr * 64u + t_gc;
+      let t_r = t_i / 32u;
+      let t_cc = t_i % 32u;
+      let t_gr = t_cb_d + t_r;
+      let t_gc = base_n + t_cc;
+      let off5 = t_gc * 64u + t_gr;
       stage_k[t_i] = k[off5];
     }
     workgroupBarrier();
 
     let t_base_q_0 = (ty * 2u + 0u) * 16u;
     let t_base_q_1 = (ty * 2u + 1u) * 16u;
-    let t_base_k_0 = (tx * 2u + 0u) * 16u;
-    let t_base_k_1 = (tx * 2u + 1u) * 16u;
+    let t_base_k_0 = tx * 2u + 0u;
+    let t_base_k_1 = tx * 2u + 1u;
     for (var t_s : u32 = 0u; t_s < 16u; t_s = t_s + 1u) {
       let t_lc = t_s;
       let t_ci = t_cb_d + t_lc;
         let v_q_0 = stage_q[t_base_q_0 + t_lc];
         let v_q_1 = stage_q[t_base_q_1 + t_lc];
-        let v_k_0 = stage_k[t_base_k_0 + t_lc];
-        let v_k_1 = stage_k[t_base_k_1 + t_lc];
+        let v_k_0 = stage_k[t_lc * 32u + t_base_k_0];
+        let v_k_1 = stage_k[t_lc * 32u + t_base_k_1];
         s[0] = s[0] + v_q_0 * v_k_0;
         s[1] = s[1] + v_q_0 * v_k_1;
         s[2] = s[2] + v_q_1 * v_k_0;

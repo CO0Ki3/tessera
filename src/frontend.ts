@@ -288,18 +288,29 @@ function collectTransposed(parsed: RowBody, node: ts.Node): Set<string> {
     if (e.k === "unary") return walk(e.a);
     if (e.k === "rowOp") return walk(e.a);
   };
-  for (const st of parsed.steps) {
+  // NESTED passes read bindings too, and missing them is not a missing diagnostic
+  // — it is a wrong kernel. `k.tileT(d, n)` inside an inner contraction went
+  // unrecorded, so the emitter staged `k` in memory order while the contraction
+  // indexed it in tile order, and attention came out 0.7% wrong: a scrambled score
+  // matrix still produces a plausible convex combination after a softmax, which is
+  // exactly the silently-wrong failure this project exists to prevent. The ULP
+  // check caught it; nothing else would have.
+  const visit = (st: Step): void => {
     // A store of a FRAGMENT reads no binding directly — the bindings it depends on
-    // were read by the inner contraction that built the fragment, and those are
-    // walked as nested passes.
+    // were read by the inner contraction that built the fragment.
     if (st.k === "store" && !st.fromFrag) walk(st.value as Expr);
+    if (st.k === "reduce" || st.k === "store") {
+      for (const inner of st.inner) visit(inner);
+    }
     if (st.k === "reduce") {
       for (const u of st.updates) {
         if (u.k === "fold") walk(u.value);
         if (u.k === "mma") { walk(u.a); walk(u.b); }
+        if (u.k === "mmaFrag") walk(u.b);
       }
     }
-  }
+  };
+  for (const st of parsed.steps) visit(st);
   for (const n of t) {
     if (plain.has(n)) {
       fail(node, `binding "${n}" is read both as .tile() and as .tileT(). One buffer ` +
