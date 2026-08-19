@@ -22,6 +22,10 @@
 <pre id="log">Ready. Click Run.</pre>
 
 <script type="module">
+// Artifacts are rebuilt by `npm run demo`, and a cached copy answers the wrong
+// question in a way that looks like a result: attention was read back from cache
+// after a fix and reported the identical wrong ULP count, twice.
+const NOCACHE = { cache: "no-store" };
 import { initDevice } from "./run.js";
 import { attachCopyButton } from "./copy.js";
 import { measureInterleaved, QUANTUM_NS } from "./measure.js";
@@ -164,7 +168,7 @@ async function main() {
   for (const v of VARIANTS) {
     let source;
     try {
-      const res = await fetch(v.file);
+      const res = await fetch(v.file, NOCACHE);
       if (!res.ok) throw new Error(`${res.status}`);
       source = await res.text();
     } catch {
@@ -184,7 +188,7 @@ async function main() {
       ],
     };
     if (v.manifest) {
-      const mres = await fetch(v.manifest);
+      const mres = await fetch(v.manifest, NOCACHE);
       if (!mres.ok) { write(`  ${v.label.padEnd(34)} <span class="warn">no manifest</span>`); continue; }
       man = await mres.json();
       entry = man.entryPoint;

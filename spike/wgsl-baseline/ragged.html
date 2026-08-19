@@ -19,6 +19,10 @@
 <pre id="log">Ready.</pre>
 
 <script type="module">
+// Artifacts are rebuilt by `npm run demo`, and a cached copy answers the
+// wrong question in a way that looks like a result: attention was read back
+// from cache after a fix and reported the identical wrong ULP count.
+const NOCACHE = { cache: "no-store" };
 import { initDevice } from "./run.js";
 import { attachCopyButton } from "./copy.js";
 import { measureInterleaved } from "./measure.js";
@@ -44,7 +48,7 @@ btn.addEventListener("click", async () => {
 
 async function main() {
   // ---- what the compiler decided ------------------------------------------
-  const man = await (await fetch("./matmul-ragged.json")).json();
+  const man = await (await fetch("./matmul-ragged.json", NOCACHE)).json();
   const M = man.axes.m, N = man.axes.n, K = man.axes.k;
   const dims = { M, N, K };
 
@@ -96,9 +100,9 @@ async function main() {
       write(`${bk.label}     <span class="warn">skipped</span> — ${TYPEGPU.reason}`);
       continue;
     }
-    const m2 = bk.man ?? await (await fetch(bk.manFile)).json();
+    const m2 = bk.man ?? await (await fetch(bk.manFile, NOCACHE)).json();
     let src;
-    try { src = await (await fetch(bk.file)).text(); }
+    try { src = await (await fetch(bk.file, NOCACHE)).text(); }
     catch { write(`${bk.label}  <span class="warn">skipped</span>`); continue; }
     const { runner, messages } = await makeRunner(ctx, {
       runtime: bk.runtime, source: src, manifest: m2, inputs: [a, b], label: bk.key,

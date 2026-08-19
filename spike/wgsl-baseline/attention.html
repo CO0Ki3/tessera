@@ -18,6 +18,10 @@
 <button id="run">Run</button>
 <pre id="log">Ready.</pre>
 <script type="module">
+// Artifacts are rebuilt by `npm run demo`, and a cached copy answers the
+// wrong question in a way that looks like a result: attention was read back
+// from cache after a fix and reported the identical wrong ULP count.
+const NOCACHE = { cache: "no-store" };
 import { initDevice } from "./run.js";
 import { attachCopyButton } from "./copy.js";
 import { measureInterleaved } from "./measure.js";
@@ -44,8 +48,8 @@ async function main() {
   const ctx = await initDevice();
   write(`adapter   ${ctx.adapterInfo.vendor} / ${ctx.adapterInfo.architecture}`);
 
-  const man = await (await fetch("./attention.json")).json();
-  const src = await (await fetch("./attention.wgsl")).text();
+  const man = await (await fetch("./attention.json", NOCACHE)).json();
+  const src = await (await fetch("./attention.wgsl", NOCACHE)).text();
   const M = man.axes.m, N = man.axes.n, D = man.axes.d, dims = { M, N, D };
 
   write(`axes      m=${M}  n=${N}  d=${D}`);
