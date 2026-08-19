@@ -87,6 +87,12 @@ const NEGATIVES = [
   // Caught by GATE 1 — the surface types reject it before the front end ever
   // runs. That is the better outcome, and worth asserting as such.
   ["gridblock.kernel.ts", "does not type-check", "grid axis blocked at 32 while tile.bm is 64"],
+  // The axis roles come from the body now, so two new ways to be wrong exist
+  // that could not exist when spec.grid and spec.reduce declared them.
+  ["unusedaxis.kernel.ts", "declared but the body never uses it",
+   "an axis in spec.axes that the body never mentions"],
+  ["bothroles.kernel.ts",  "both reduced and stored along",
+   "attention's shape — sayable now, not schedulable yet"],
   // Ragged. All three are caught by GATE 1 — the surface types reject them
   // before the front end runs, with the diagnostics the design specified.
   ["nopad.kernel.ts",   "this block is ragged", "ragged load with no identity named"],

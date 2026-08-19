@@ -14,8 +14,7 @@ export const matmulRelu = kernel(
   {
     name: "matmul_relu_f32",
     tile: T,
-    grid: [M, N],
-    reduce: [K],
+    axes: [M, N, K],
     bindings: [
       input("a", [M, K], f32),
       input("b", [K, N], f32),

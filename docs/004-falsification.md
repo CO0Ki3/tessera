@@ -566,3 +566,69 @@ out to be free; see docs/002 §6b, including why the same class of fix was worth
 **So R10 was wrong twice over.** It said the split was honest and that unifying it
 needed a contraction abstraction rather than a refactor. The abstraction was real;
 the split was not.
+
+## R12. The fourth family: attention, and what it moved
+
+Written as a probe — the kernel first, before finding out what is admitted — so
+the type checker enumerated the gap instead of argument doing it. Four things,
+three vocabulary and one structural:
+
+| | | |
+|---|---|---|
+| G1 | `mma` wants `[bk, bn]`; attention needs `Kᵀ`, and `k.tile(n, d)` is `[bn, bk]` | vocabulary |
+| G2 | `rowMax(s, mx)` where `s` is a computed `Frag`, not a loaded `Tile` | vocabulary |
+| G3 | `subRow` / `divRow` / `mma` over a computed fragment | vocabulary |
+| G4 | `at.d` does not exist | **structural** |
+
+G1 is the surface working as designed: a transposed axis *is* a type error here,
+so attention has to **say** the transpose rather than have it inferred.
+
+**G4 is the one worth having found.** Attention contracts the head dimension in
+`S = Q·Kᵀ` and leaves it free in `O = P·V`, with the key axis as the mirror image
+— the same axis on both sides of the split, in one kernel. But
+`planContraction(accumulate, contract, …)` was already parameterised per
+contraction and assumed nothing global. What assumed a global split was the
+**surface**: `spec.grid` and `spec.reduce` partitioned the axes once per kernel,
+and `at.*` was built from grid alone.
+
+So R11's prediction — derivation general, vocabulary finite — survived contact in
+a specific form, and named its own next move.
+
+### The partition is gone; the roles are read
+
+`spec.grid` and `spec.reduce` became `spec.axes`, one list, and `Ctx` opens `at`
+and `reduce` over every declared axis. The roles come from the body:
+
+```
+contracted   the axis of a `for (const n of reduce.n)` pass
+parallel     an axis used as `at.<name>` in the store's `.tile(...)`
+```
+
+Declaring them was asking the author for what the compiler could already see —
+the same shape of mistake as a host recomputing `manifest.dispatch`.
+
+**"Parallel = the output binding's axes" would have been wrong**, and softmax is
+the counterexample that caught it before any code was written: `y` is `[m, n]`
+but `n` is reduced, and the body already says so, by writing `y.tile(at.m, n)`
+rather than `y.tile(at.m, at.n)`.
+
+Three things the parser had been discarding, each redundant only because of the
+global partition: the loop axis, the tile coordinates, and the store coordinates.
+The second is the notable one — **transposition was caught by the type checker
+alone, and nothing downstream could see which axis went where.**
+
+Verified behaviour-preserving: all four kernels emit **byte-identical WGSL**
+before and after. The type surface came out simpler as well as more general —
+one list instead of two — and two new admission errors exist that could not have
+existed before, both with negatives:
+
+```
+unusedaxis   an axis in spec.axes the body never mentions
+bothroles    an axis both reduced and stored along — attention's shape,
+             sayable now, still not schedulable
+```
+
+The second is deliberately an error rather than a guess. A compiler that quietly
+picks one of the two roles would be reinterpreting the program, which is the
+failure the admission rule exists to prevent. Making it schedulable is where this
+goes next.

@@ -157,10 +157,9 @@ function readSpecName(specNode: ts.Expression): string {
  */
 function checkCanonicalBody(
   call: ts.CallExpression,
-  reduceAxes: readonly AxisIR[],
   bindings: readonly BindingIR[],
   raggedNames: ReadonlySet<string>,
-): { padded: Map<string, PadName>; schedule: Schedule; rowBody?: RowBody } {
+): { padded: Map<string, PadName>; schedule: Schedule; rowBody: RowBody } {
   const body = call.arguments[1];
   if (!body || (!ts.isArrowFunction(body) && !ts.isFunctionExpression(body))) {
     fail(body ?? call, "kernel()'s second argument must be a function");
@@ -262,10 +261,6 @@ function checkCanonicalBody(
   // time from an operand read straight from global memory. Unifying those means a
   // contraction abstraction, which is a design step rather than a refactor.
   if (schedule === "matmul") {
-    const passes = parsed.steps.filter((x) => x.k === "reduce");
-    if (passes.length !== reduceAxes.length) {
-      fail(body, `a fragment schedule needs one pass per reduce axis; found ${passes.length}`);
-    }
     if (!parsed.steps.some((x) => x.k === "storeFrag")) {
       fail(body, `a fragment schedule ends by storing the fragment`);
     }
@@ -275,6 +270,75 @@ function checkCanonicalBody(
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * Which axes are parallel and which are contracted, read from the body.
+ *
+ * These used to be declared, as `spec.grid` and `spec.reduce`. Declaring them
+ * asked the author for something the compiler could already see — the same shape
+ * of mistake as a host recomputing `manifest.dispatch` — and it forced a single
+ * partition per kernel, which is a matmul-shaped assumption.
+ *
+ * The rules:
+ *
+ *   contracted   the axis of a `for (const n of reduce.n)` pass
+ *   parallel     an axis used as `at.<name>` in the store's `.tile(...)`
+ *
+ * "Parallel = the output binding's axes" would have been wrong, and softmax is
+ * the counterexample: `y` is `[m, n]` but `n` is reduced, and the body says so by
+ * writing `y.tile(at.m, n)` rather than `y.tile(at.m, at.n)`.
+ */
+function deriveAxisRoles(
+  parsed: RowBody,
+  axes: readonly AxisIR[],
+  node: ts.Node,
+): { grid: AxisIR[]; reduce: AxisIR[] } {
+  const byName = new Map(axes.map((a) => [a.name, a]));
+  const contracted: string[] = [];
+  const parallel: string[] = [];
+  const push = (xs: string[], n: string) => { if (!xs.includes(n)) xs.push(n); };
+
+  for (const st of parsed.steps) {
+    if (st.k === "reduce" || st.k === "store") push(contracted, st.axis);
+    if (st.k === "store" || st.k === "storeFrag") {
+      for (const c of st.coords) if (c.kind === "at") push(parallel, c.axis);
+    }
+  }
+
+  for (const n of [...contracted, ...parallel]) {
+    if (!byName.has(n)) {
+      fail(node, `the body uses axis "${n}", which is not in spec.axes ` +
+                 `(${axes.map((a) => a.name).join(", ")})`);
+    }
+  }
+  for (const a of axes) {
+    if (!contracted.includes(a.name) && !parallel.includes(a.name)) {
+      fail(node, `axis "${a.name}" is declared but the body never uses it, ` +
+                 `neither as at.${a.name} in a store nor as a reduce loop`);
+    }
+  }
+  if (parallel.length < 1 || parallel.length > 3) {
+    fail(node, `a kernel needs 1-3 parallel axes (WebGPU dispatches in 3 dimensions), ` +
+               `and the body's store uses ${parallel.length}`);
+  }
+  if (contracted.length !== 1) {
+    fail(node, `this build supports exactly 1 reduction axis, and the body reduces ` +
+               `over ${contracted.length} (${contracted.join(", ") || "none"})`);
+  }
+  // An axis that is BOTH is what attention needs — the head dimension is
+  // contracted in S = Q·Kᵀ and free in O = P·V. The surface can now say it; the
+  // emitter cannot yet schedule it, so refuse plainly rather than emit something
+  // that is not what was written. See spike/attention/.
+  const both = parallel.filter((n) => contracted.includes(n));
+  if (both.length) {
+    fail(node, `axis "${both[0]}" is both reduced and stored along. That is legal to ` +
+               `write and is what attention needs, but this build cannot schedule it yet.`);
+  }
+  return {
+    grid: parallel.map((n) => byName.get(n)!),
+    reduce: contracted.map((n) => byName.get(n)!),
+  };
+}
 
 export function compileToIR(entryFile: string): KernelIR {
   const program = ts.createProgram([entryFile], {
@@ -330,38 +394,24 @@ export function compileToIR(entryFile: string): KernelIR {
     : undefined;
 
   // ---- axes -------------------------------------------------------------
-  const gridT = propType(checker, spec, "grid") ?? fail(specNode, "spec.grid is missing");
-  const grid = tupleElements(checker, gridT).map((t) => readAxis(checker, t, "grid"));
-  if (grid.length < 1 || grid.length > 3) {
-    fail(specNode, `spec.grid must have 1-3 axes (WebGPU dispatches in 3 dimensions), got ${grid.length}`);
-  }
-
-  const reduceT = propType(checker, spec, "reduce") ?? fail(specNode, "spec.reduce is missing");
-  const reduce = tupleElements(checker, reduceT).map((t) => readAxis(checker, t, "reduce"));
-  if (reduce.length !== 1) {
-    fail(specNode, `this build supports exactly 1 reduce axis, got ${reduce.length}`);
+  // Declared as one list. Which of them are parallel and which are contracted is
+  // read from the body by deriveAxisRoles, below.
+  const axesT = propType(checker, spec, "axes") ?? fail(specNode, "spec.axes is missing");
+  const axes = tupleElements(checker, axesT).map((t) => readAxis(checker, t, "axes"));
+  if (!axes.length) fail(specNode, "spec.axes is empty");
+  {
+    const seen = new Set<string>();
+    for (const a of axes) {
+      if (seen.has(a.name)) fail(specNode, `spec.axes names "${a.name}" twice`);
+      seen.add(a.name);
+    }
   }
   // Tile coherence, when a tile is declared. This used to be a tsc error via the
   // kernel() signature, which cost a seven-diagnostic cascade for one mistake and
   // hard-wired "two grid axes, one reduce axis blocked at bk" into the surface.
   // Reported here instead: one error, and kernels that are not matmul-shaped can
   // exist. docs/001 §7 listed suppressing that cascade as outstanding work.
-  if (declaredTile && grid.length === 2) {
-    const named: [string, number, number][] = [
-      [grid[0].name, grid[0].block, declaredTile.bm],
-      [grid[1].name, grid[1].block, declaredTile.bn],
-      [reduce[0].name, reduce[0].block, declaredTile.bk],
-    ];
-    for (const [nm, got, want] of named) {
-      if (got !== want) {
-        fail(specNode, `TSA0051: axis "${nm}" is blocked at ${got}, but the tile says ${want}`);
-      }
-    }
-  }
-
-  // Tile/axis coherence — the surface types enforce this too, but the message
-  // here names the mismatch directly instead of cascading.
-  const byName = new Map([...grid, ...reduce].map((a) => [a.name, a]));
+  const byName = new Map(axes.map((a) => [a.name, a]));
 
   // ---- bindings ---------------------------------------------------------
   const dtype: DTypeName = declaredTile
@@ -381,7 +431,7 @@ export function compileToIR(entryFile: string): KernelIR {
 
     for (const a of axes) {
       const known = byName.get(a.name);
-      if (!known) fail(specNode, `binding "${bname}" uses axis "${a.name}", which is not in grid or reduce`);
+      if (!known) fail(specNode, `binding "${bname}" uses axis "${a.name}", which is not in spec.axes`);
       if (known.extent !== a.extent) {
         fail(specNode, `binding "${bname}": axis "${a.name}" has extent ${a.extent}, but it is ${known.extent} elsewhere`);
       }
@@ -414,15 +464,33 @@ export function compileToIR(entryFile: string): KernelIR {
   // identity element, which is the one fact the compiler cannot infer. Deciding
   // WHERE masks go is the compiler's job, and is the demo the project exists for:
   // change one literal and every boundary condition is re-derived.
-  const raggedNames = new Set(
-    [...grid, ...reduce].filter((a) => a.fit === "ragged").map((a) => a.name));
+  const raggedNames = new Set(axes.filter((a) => a.fit === "ragged").map((a) => a.name));
 
   const maskedLoads: string[] = [];
   for (const b of bindings) {
     for (const ax of b.axes) if (raggedNames.has(ax)) maskedLoads.push(`${b.name}:${ax}`);
   }
 
-  const { padded, schedule, rowBody } = checkCanonicalBody(call, reduce, bindings, raggedNames);
+  const { padded, schedule, rowBody } = checkCanonicalBody(call, bindings, raggedNames);
+  const { grid, reduce } = deriveAxisRoles(rowBody, axes, specNode);
+
+  // Tile coherence, when a tile is declared. This used to be a tsc error via the
+  // kernel() signature, which cost a seven-diagnostic cascade for one mistake and
+  // hard-wired "two grid axes, one reduce axis blocked at bk" into the surface.
+  // Reported here instead: one error, and kernels that are not matmul-shaped can
+  // exist. docs/001 §7 listed suppressing that cascade as outstanding work.
+  if (declaredTile && grid.length === 2) {
+    const named: [string, number, number][] = [
+      [grid[0].name, grid[0].block, declaredTile.bm],
+      [grid[1].name, grid[1].block, declaredTile.bn],
+      [reduce[0].name, reduce[0].block, declaredTile.bk],
+    ];
+    for (const [nm, got, want] of named) {
+      if (got !== want) {
+        fail(specNode, `TSA0051: axis "${nm}" is blocked at ${got}, but the tile says ${want}`);
+      }
+    }
+  }
 
   // Every read binding touching a ragged axis needs its identity named; the
   // surface enforces this too, but this message names the binding directly.

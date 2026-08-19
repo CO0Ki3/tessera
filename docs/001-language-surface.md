@@ -16,7 +16,7 @@ const N = axis("n",  768, T.bn);
 const K = axis("k",  512, T.bk);
 
 export const matmulRelu = kernel(
-  { name: "matmul_relu_f32", tile: T, grid: [M, N], reduce: [K],
+  { name: "matmul_relu_f32", tile: T, axes: [M, N, K],
     bindings: [input("a", [M, K], f32), input("b", [K, N], f32), output("c", [M, N], f32)] },
   ({ a, b, c, at, reduce }) => {
     let acc = zeros(T.bm, T.bn, f32);

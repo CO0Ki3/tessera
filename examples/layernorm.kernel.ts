@@ -21,8 +21,7 @@ const N = raggedAxis("n", 750, 64);
 export const layernorm = kernel(
   {
     name: "layernorm_f32",
-    grid: [M],
-    reduce: [N],
+    axes: [M, N],
     bindings: [
       input("x", [M, N], f32),
       output("y", [M, N], f32),

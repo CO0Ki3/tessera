@@ -15,7 +15,7 @@ const T = tiling(f32, 64, 64, 16);
 const M = axis("m", 1024, T.bm);
 const N = raggedAxis("n", 750, T.bn);
 export const k1 = kernel(
-  { name: "max_pad_zero", grid: [M], reduce: [N],
+  { name: "max_pad_zero", axes: [M, N],
     bindings: [input("x", [M, N], f32), output("y", [M, N], f32)] },
   ({ x, y, at, reduce }) => {
     let mx = rowFill(T.bm, f32, negInf);

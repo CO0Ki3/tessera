@@ -23,8 +23,7 @@ const N = raggedAxis("n", 750, T.bn);   // 750 % 64 = 46
 export const softmax = kernel(
   {
     name: "softmax_f32",
-    grid: [M],
-    reduce: [N],
+    axes: [M, N],
     bindings: [
       input("x", [M, N], f32),
       output("y", [M, N], f32),
