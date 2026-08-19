@@ -117,6 +117,36 @@ allocation happens once, outside the pass, and was never in the timed region.
 `measureInterleaved` now returns `belowResolution` per row, and both pages print
 a warning rather than a plausible-looking number when it is set.
 
+### Batched, several open questions turned out to be answers
+
+`matmul.html` batches 16 dispatches per timed pass, which moves the resolution
+from one quantum to 1/16 of one and drops the spread to 0.06–0.75q. Rows that had
+been reading "indistinguishable" for want of resolution now say so on the
+evidence:
+
+```
+                                 min      Δ        noise    verdict
+hand-written                    6.81q
+tessera direct                  6.69q    0.12q    0.44q    at parity
+tessera direct, TypeGPU         6.69q    0q       0.25q    the layer is free
+A·Bᵀ, b stored [N,K]            6.63q    0.06q    0.31q    .tileT() costs nothing
+probe A1  hand read_write       6.75q    0.06q    0.44q    null
+probe A2  tessera read         10.81q    0.06q    0.25q    null
+probe B   --no-opt             10.88q    0q       0.25q    null
+probe C   k unrolled           14.44q             —        0.75×
+probe D   naga round-trip      12.88q             —        1.93×
+```
+
+Two of those were recorded as open. **The TypeGPU resource layer is free** with a
+floor of a quarter quantum rather than a whole one, and **a transposed staging
+read costs nothing measurable** — `docs/004` had that one down as "not measurably
+worse, which is weaker than free", and at sixteen times the resolution it is
+still not measurable.
+
+The three real findings are unchanged in kind and slightly smaller in size: the
+MLIR chain 1.60×, the naga round-trip 1.93× (was quoted 2.17× off a coarser
+baseline), unrolling 0.75×.
+
 Batched, the rowwise kernels measure 0.45–0.50 quanta per dispatch with a spread
 of **0.03q** — a real number, where `0q` and `1q` were not.
 

@@ -20,6 +20,7 @@
 <pre id="log"></pre>
 <script type="module">
 import { initDevice } from "./run.js";
+import { attachCopyButton } from "./copy.js";
 import { measureInterleaved } from "./measure.js";
 import { makeRunner, typegpuStatus } from "./runners.js";
 import { randomF32, fusedSoftmaxF32, summarize, bitExactCount,
@@ -28,6 +29,7 @@ const TYPEGPU = await typegpuStatus();
 
 const logEl = document.getElementById("log");
 const btn = document.getElementById("run");
+attachCopyButton(btn, logEl);
 let buf = "";
 const write = (s = "") => { buf += s + "\n"; logEl.innerHTML = buf; };
 const f = (x, n = 3) => Number(x).toFixed(n);

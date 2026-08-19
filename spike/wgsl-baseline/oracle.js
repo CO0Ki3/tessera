@@ -445,12 +445,21 @@ export function transposeF32(src, rows, cols) {
 /**
  * softmax_n(A · B) in f32, the reference for examples/fused-softmax.kernel.ts.
  *
- * Two things this deliberately does NOT do. It does not fuse: the matmul
- * completes into a full row before the softmax starts, where the kernel folds
- * across lanes as it goes. And it does not contract the multiply-add — JS has no
- * FMA — so the GPU is expected to be close rather than bit-identical, the same
- * situation as the plain matmul, and the same error bound applies to the
- * contraction half.
+ * It deliberately does not FUSE: the matmul completes into a full row before the
+ * softmax starts, where the kernel folds across lanes as it goes.
+ *
+ * It does CONTRACT, and the first version of this did not — which reported the
+ * kernel as failing at 189 ULP. The arithmetic is the whole explanation. This
+ * adapter fuses `acc + a*b` into one rounding, which the plain matmul already
+ * establishes (786432/786432 bit-exact against the FMA reference). Two roundings
+ * per step instead leaves the scores off by ~1.14e-5, and `exp` turns an absolute
+ * score error into a relative one, so 1.14e-5 / 2^-24 ≈ 190 ULP comes out the
+ * other side. Predicted 192, measured 189.
+ *
+ * Same class as the 912 spurious matmul failures in docs/002 §2: a reference that
+ * does not match the machine's arithmetic, reported as a kernel bug. `a * b`
+ * unrounded inside `fround` is the one-rounding form, the same trick
+ * `matmulReluF32({contract: true})` uses.
  *
  * `dims.N` is one block wide by construction, so a row fits one workgroup and the
  * softmax is well defined inside it.
@@ -461,7 +470,8 @@ export function fusedSoftmaxF32(a, b, { M, N, K }) {
   for (let m = 0; m < M; m++) {
     for (let n = 0; n < N; n++) {
       let acc = 0;
-      for (let k = 0; k < K; k++) acc = Math.fround(acc + Math.fround(a[m * K + k] * b[k * N + n]));
+      // One rounding per step: the multiply stays in f64 and only the sum rounds.
+      for (let k = 0; k < K; k++) acc = Math.fround(acc + a[m * K + k] * b[k * N + n]);
       row[n] = acc;
     }
     let mx = -Infinity;

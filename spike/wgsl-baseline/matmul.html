@@ -51,6 +51,7 @@
 
 <script type="module">
 import { initDevice } from "./run.js";
+import { attachCopyButton } from "./copy.js";
 import { measureInterleaved, QUANTUM_NS } from "./measure.js";
 
 import { makeRunner, typegpuStatus } from "./runners.js";
@@ -63,6 +64,7 @@ import {
 
 const logEl = document.getElementById("log");
 const btn = document.getElementById("run");
+attachCopyButton(btn, logEl);
 let buf = "";
 
 const write = (s = "") => { buf += s + "\n"; logEl.innerHTML = buf; };
@@ -328,9 +330,9 @@ async function main() {
     write(`TypeGPU resource layer costs   ${cmp("typegpu", "direct").text}   ` +
           `<span class="dim">(${f(q("direct"), 2)}q \u2192 ${f(q("typegpu"), 2)}q, ${dq >= 0 ? "+" : ""}${dq}q)</span>`);
     write(Math.abs(dq) <= 1
-      ? `  <span class="ok">free</span> \u2014 same WGSL, same dispatch, same timed code, so the ` +
-        `\u00b11q\n  is the instrument, not the layer. The resources are simply allocated by a ` +
-        `typed\n  layer instead of by hand.`
+      ? `  <span class="ok">free</span> \u2014 same WGSL, same dispatch, same timed code, so ` +
+        `whatever\n  is left is the instrument, not the layer. Batched, that floor is ` +
+        `1/${BATCH} of a\n  quantum rather than a whole one.`
       : `  <span class="warn">not free</span> \u2014 investigate before adopting it; nothing in ` +
         `the timed path differs, so this would be allocation or binding.`);
     write("");

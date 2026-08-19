@@ -576,8 +576,8 @@ three vocabulary and one structural:
 | | | |
 |---|---|---|
 | G1 | `mma` wants `[bk, bn]`; attention needs `Kᵀ`, and `k.tile(n, d)` is `[bn, bk]` | vocabulary — **closed** |
-| G2 | `rowMax(s, mx)` where `s` is a computed `Frag`, not a loaded `Tile` | vocabulary |
-| G3 | `subRow` / `divRow` / `mma` over a computed fragment | vocabulary |
+| G2 | `rowMax(s, mx)` where `s` is a computed `Frag`, not a loaded `Tile` | **closed** |
+| G3 | `subRow` / `divRow` / `mma` over a computed fragment | **closed** (row ops; `mma` needs G4) |
 | G4 | `at.d` does not exist | **structural** |
 
 G1 is the surface working as designed: a transposed axis *is* a type error here,
@@ -688,9 +688,52 @@ The structural argument was strong and had never been executed. Given how often
 this project has had a confident inference turned over by running it, that was
 worth closing.
 
-**Cost: not measurably worse, which is weaker than free.** `A·Bᵀ` measured 6q
-against `direct`'s 6q — but a transposed read changes which lanes touch which
-addresses, so whether staging `b` as `[N, K]` coalesces as well is a fair
-question, and one quantum of noise on a six-quantum kernel cannot resolve a 15%
-difference. Answering it properly needs batching, the way `rowwise.html` does it.
-Recorded as open rather than claimed.
+**Cost: nothing measurable, now at sixteen times the resolution.** This was first
+recorded as "not measurably worse, which is weaker than free" — 6q against 6q
+with a whole quantum of noise cannot resolve a 15% difference, and a transposed
+read changes which lanes touch which addresses, so the question was fair.
+Batched, `A·Bᵀ` is 6.63q against 6.69q with 0.31q of noise. Still not measurable,
+and now that means something. See `docs/002` §2a.
+
+### G2 and G3 closed: reducing a computed fragment
+
+`softmax_n(A·B)`, one contraction and then a row reduction over the fragment it
+produced. N is one block wide so a row fits a workgroup, which keeps this clear
+of G4.
+
+**Four layers moved, and only the first is what "vocabulary" described.**
+
+| | |
+|---|---|
+| surface | `Frag` overloads for `rowMax`/`rowSum`/`subRow`/`divRow`/`mulRow`/`expTile` |
+| parser | a fragment reduction as a derived value outside any loop; a fragment-valued intermediate; `FragExpr` grew the unary and row-scaling forms `Expr` already had |
+| emitter | `emitReduceFrag` — a **cross-lane** fold |
+| `rowExpr` | a row value is indexed by the row cell, not the whole 2-D cell |
+
+The emitter half is the reclassification. `accumulate = (m, n)` assigns n to the
+x lane, so one row of the fragment lives in all sixteen of them: fold the four
+columns this invocation holds, write the partial to scratch at its own lane,
+barrier, fold across lanes. That is a new capability rather than a new name — the
+same shape as `emitCombine` and not the same code, since there the accumulator is
+one-dimensional and here only one axis of a two-dimensional fragment is folded.
+
+The overloads are deliberately **unguarded**. A fragment's out-of-range lanes hold
+the zero `mma` guarantees, which is the identity a sum wants and the wrong one for
+a max — but whether that matters depends on whether the reduced axis is ragged,
+which is a property of the axis and lives in the spec rather than in the value. So
+the check belongs to the pass that has the axis table. Same split as everywhere
+else.
+
+Verified: `fused.html`, 264-line kernel, six barriers, 12288 B of workgroup
+storage against the 16384 B floor. Every row sums to 1 — an invariant needing no
+reference, which a wrong cross-lane fold would break outright — and ULP against a
+CPU `softmax(A·B)`.
+
+**The first oracle was wrong, and the way it was wrong is the point.** It reported
+189 ULP and a FAIL. It did not contract the multiply-add, where the adapter fuses
+`acc + a*b` into one rounding — which the plain matmul had already established at
+786432/786432 bit-exact. Two roundings leave the scores off by ~1.14e-5, and
+`exp` turns an absolute score error into a relative one, so ~190 ULP comes out the
+far side. Predicted 192, measured 189. Same class as the 912 spurious failures in
+`docs/002` §2: **a reference that does not match the machine's arithmetic,
+reported as a kernel bug.**

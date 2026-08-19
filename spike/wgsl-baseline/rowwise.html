@@ -38,6 +38,7 @@
 
 <script type="module">
 import { initDevice } from "./run.js";
+import { attachCopyButton } from "./copy.js";
 import { measureInterleaved } from "./measure.js";
 import { makeRunner, typegpuStatus } from "./runners.js";
 const TYPEGPU = await typegpuStatus();
@@ -46,6 +47,7 @@ import { randomF32, softmaxF32, layernormF32, rowSums, rowMoments, maxUlpDiff,
 
 const logEl = document.getElementById("log");
 const btn = document.getElementById("run");
+attachCopyButton(btn, logEl);
 let buf = "";
 const write = (s = "") => { buf += s + "\n"; logEl.innerHTML = buf; };
 const yieldToPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
