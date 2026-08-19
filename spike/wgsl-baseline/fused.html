@@ -2,22 +2,19 @@
 <meta charset="utf-8">
 <meta http-equiv="cache-control" content="no-store">
 <title>fused softmax(A·B)</title>
-<style>
-  body { font: 13px ui-monospace, Menlo, monospace; margin: 2rem; max-width: 62rem; }
-  pre  { white-space: pre-wrap; line-height: 1.5 }
-  .ok { color: #197f19 } .bad { color: #b00 } .warn { color: #b57500 } .dim { color: #777 }
-  button { font: inherit; padding: .3rem .9rem }
-</style>
-<h3>softmax<sub>n</sub>(A·B) — one contraction, then a cross-lane row reduction</h3>
-<p class="dim">
-  The fourth family's G2/G3 (docs/004 R12): row reductions and row operations over
-  a <b>computed fragment</b> rather than a staged tile. <code>accumulate = (m, n)</code>
-  puts n on the x lane, so one row of the fragment lives in all sixteen of them and
-  reducing along n crosses lanes — a barrier, not an expression.
+<link rel="stylesheet" href="./harness.css">
+<h1><a href="./" style="color:inherit">tessera</a> — a contraction, then a reduction across lanes</h1>
+<p class="sub">
+  softmax<sub>n</sub>(A&middot;B): the first kernel to reduce a <b>computed fragment</b>
+  rather than a tile read from memory. <code>accumulate = (m, n)</code> puts n on the
+  x lane, so one row of that fragment lives in all sixteen of them &mdash; the fold
+  crosses lanes and needs a barrier rather than an expression.<br>
   N is one block wide, so a row fits a workgroup and this stays clear of G4.
+  See <code>docs/004-falsification.md</code> R12.
 </p>
-<button id="run">run</button>
-<pre id="log"></pre>
+
+<button id="run">Run</button>
+<pre id="log">Ready.</pre>
 <script type="module">
 import { initDevice } from "./run.js";
 import { attachCopyButton } from "./copy.js";
@@ -106,18 +103,31 @@ async function main() {
   write("── oracle ─────────────────────────────────────────");
   write(`<span class="dim">CPU softmax(A·B) over ${(2 * M * N * K / 1e6).toFixed(0)}M flops…</span>`);
   await yieldToPaint();
-  const want = fusedSoftmaxF32(a, b, dims);
+  const { y: want, maxArg } = fusedSoftmaxF32(a, b, dims);
   const exact = bitExactCount(got, want);
   const { ulp } = maxUlpDiff(got, want);
   write(`bit-exact ${exact} / ${got.length} (${(100 * exact / got.length).toFixed(2)}%)   max ${ulp} ULP`);
   write("");
-  // The contraction is not bit-reproducible on the CPU (no FMA in JS) and exp is
-  // inexact, so ULP on the result is the meaningful scale — the same reading
-  // rowwise.html uses for softmax.
-  const pass = ulp <= 8 && invOk;
+
+  // A FLAT ULP bound is the wrong criterion here, and rowwise.html's softmax gets
+  // away with one only because its input is order-1 data read from memory. This
+  // kernel feeds `exp` a 512-term dot product, so the argument reaches -${maxArg}
+  // — and a GPU computes exp(x) as exp2(x * log2e), whose f32 product rounding
+  // costs about |x| ULP of the result. Measured: |x| = 20 gives ~1 ULP, 47 ~22.
+  //
+  // So the bound scales with the argument, plus a few for the summation order
+  // (the kernel folds four columns per lane then across sixteen; measured at
+  // 4 ULP against a linear sum) and the final divide. Picking the criterion that
+  // is true rather than the one that is easy to state is the same lesson as
+  // docs/002 §2, where a flat rtol/atol reported 912 non-failures.
+  const bound = Math.ceil(maxArg) + 8;
+  const pass = ulp <= bound && invOk;
+  write(`bound     ${bound} ULP   <span class="dim">= ceil(max |s - rowmax|) = ${maxArg.toFixed(1)}, ` +
+        `plus 8 for the fold order and the divide</span>`);
   write(pass
-    ? `<span class="ok">PASS</span>  ${ulp} ULP — within what an inexact exp plus a ` +
-      `non-contracted CPU reference explain.`
-    : `<span class="bad">FAIL</span>  ${ulp} ULP is too far to be rounding.`);
+    ? `<span class="ok">PASS</span>  ${ulp} ULP against ${bound} — exp's own error at this ` +
+      `argument, and nothing else.`
+    : `<span class="bad">FAIL</span>  ${ulp} ULP exceeds ${bound}; that is more than exp ` +
+      `at this argument explains.`);
 }
 </script>

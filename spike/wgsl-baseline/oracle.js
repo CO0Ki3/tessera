@@ -467,6 +467,12 @@ export function transposeF32(src, rows, cols) {
 export function fusedSoftmaxF32(a, b, { M, N, K }) {
   const out = new Float32Array(M * N);
   const row = new Float32Array(N);
+  // The largest magnitude reaching `exp`. It is returned because it IS the error
+  // scale: a GPU computes exp(x) as exp2(x * log2e), and rounding that product to
+  // f32 costs |x| * 2^-24 of relative error in the result — one ULP of output per
+  // unit of input. Measured against an exact exp: |x| = 20 gives ~1 ULP, 47 gives
+  // ~22, 60 gives ~28.
+  let maxArg = 0;
   for (let m = 0; m < M; m++) {
     for (let n = 0; n < N; n++) {
       let acc = 0;
@@ -477,8 +483,13 @@ export function fusedSoftmaxF32(a, b, { M, N, K }) {
     let mx = -Infinity;
     for (let n = 0; n < N; n++) mx = Math.max(mx, row[n]);
     let sum = 0;
-    for (let n = 0; n < N; n++) { row[n] = Math.fround(Math.exp(Math.fround(row[n] - mx))); sum = Math.fround(sum + row[n]); }
+    for (let n = 0; n < N; n++) {
+      const arg = Math.fround(row[n] - mx);
+      if (-arg > maxArg) maxArg = -arg;
+      row[n] = Math.fround(Math.exp(arg));
+      sum = Math.fround(sum + row[n]);
+    }
     for (let n = 0; n < N; n++) out[m * N + n] = Math.fround(row[n] / sum);
   }
-  return out;
+  return { y: out, maxArg };
 }
