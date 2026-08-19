@@ -4,33 +4,22 @@ Paste everything between the markers. Nothing else needs to be filed.
 
 <!-- ─────────────────── BEGIN COMMENT ─────────────────── -->
 
-There is a second problem in the same literal path, and since both land on the
-one `write!` for `Literal::F32` it may be worth fixing together.
+`wgsl-out` has a second problem in this same `write!`, which may be worth fixing
+alongside. For `f32::MAX` it emits `340282350000000000000000000000000000000f`:
 
-For `f32::MAX`, `Display` emits `340282350000000000000000000000000000000f`. That
-round-trips *as an f32*, but WGSL parses a literal as `AbstractFloat` first,
-where it is strictly greater than `f32::MAX`. Chrome rejects it:
-
-```wgsl
-// in.wgsl — the input spells f32::MAX exactly
-o[0] = 0x1.fffffep+127;
-```
 ```console
+$ cat in.wgsl
+@group(0) @binding(0) var<storage, read_write> o : array<f32>;
+@compute @workgroup_size(1) fn main() { o[0] = 0x1.fffffep+127; }
+
 $ naga in.wgsl out.wgsl && grep 'o\[0\]' out.wgsl
     o[0] = 340282350000000000000000000000000000000f;
 ```
 
-Through `createShaderModule` on both browsers:
-
-| literal | Firefox 153 | Chrome 151 |
-|---|---|---|
-| `0x1.fffffep+127` — the input | accepted | accepted |
-| `340282350000000000000000000000000000000f` — what `wgsl-out` produced | accepted | **rejected** |
-| `3.4028235e38` — the same value, exponent form | accepted | **rejected** |
-
-**This is a range problem rather than a length one**, so exponent notation alone
-would not cover it — `3.4028235e38f` is short and still rejected, as the third
-row shows.
+That round-trips *as an f32*, but WGSL reads a literal as `AbstractFloat` first,
+where it is greater than `f32::MAX`. Chrome rejects it, Firefox accepts it. It is
+a **range** problem rather than a length one, so exponent form alone would not
+cover it — `3.4028235e38f` is short and still rejected by Chrome.
 
 The `i32` arm just below already handles exactly this shape of bug:
 
@@ -61,19 +50,10 @@ The same treatment for `f32`:
 +                }
 ```
 
-which gives `3.4028234663852886e38f`, accepted by both browsers above.
-
-Scope: scanning the two million `f32` values below the maximum found exactly one
-whose `Display` output exceeds `f32::MAX`, and it is `f32::MAX`. So this touches
-two literals and no snapshot that does not already contain one, and `0.1f` and
-friends are unchanged. `f16` needs nothing — `f16::MAX` is 65504, exactly
-representable as a decimal.
-
-It is deliberately narrow, and orthogonal to the formatting change this issue
-asks for: after the above, `3e38` still prints as its 39-digit expansion, so it
-does not constrain whatever you decide about notation. (For what it is worth, a
-plain `{:e}` would touch every literal — `1f` becomes `1e0f` and `0.1f` becomes
-`1e-1f` — so that one looks like a bigger call than this.)
+which gives `3.4028234663852886e38f`, accepted by both browsers. `f32::MAX` is
+the only `f32` whose `Display` output exceeds it, so this touches two literals
+and leaves `0.1f` and the snapshots alone. `f16` needs nothing — 65504 is exactly
+representable.
 
 Happy to open a PR for this piece if you would like it done this way.
 
