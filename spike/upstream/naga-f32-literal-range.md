@@ -4,8 +4,12 @@
   **archived 2025-01-29** and is read-only; development moved into `wgpu/naga/`
 - **Affects**: naga 30.0.0 — which is also wgpu 30.0.0 and naga-cli 30.0.0, one
   release train, published 2026-07-02. This is current, not an old CLI.
-- **Related**: [#4568](https://github.com/gfx-rs/wgpu/issues/4568) — same root
-  cause (float serialization near `f32::MAX`), different backend and symptom
+- **Related, not duplicates**:
+  [#9907](https://github.com/gfx-rs/wgpu/issues/9907) (same function, different
+  defect — see the *Relationship to #9907* section) and
+  [#4568](https://github.com/gfx-rs/wgpu/issues/4568) (same root cause in
+  `glsl-out`)
+- **Title**: `[naga] WGSL backend emits a float literal outside f32's range for f32::MAX`
 - **Label**: `naga (Shader Translator)`
 - **Confirmed end to end on shipping browsers**: Firefox 153.0 accepts the exact
   string naga emits; Chrome 151.0 rejects it (macOS). Nothing here is inferred.
@@ -48,6 +52,33 @@ conversion.
 This is the WGSL sibling of #4568, which reports `glsl-out` emitting
 `3.4028235e38` where it used to emit `3.4028234663852886e38`. Same root cause,
 different backend, and this one produces a shader a browser refuses.
+
+### Relationship to #9907
+
+#9907 also reports `wgsl-out`'s float literals, so they look alike, but they are
+two separable defects in the same formatting path and **neither fix resolves the
+other**:
+
+| | #9907 | this |
+|---|---|---|
+| what is wrong | the literal is **written** as a ~39-digit decimal expansion | the literal's **value** is greater than `f32::MAX` |
+| who rejects it | Safari's WGSL lexer | Tint (Chrome) |
+| example | `300000000000000000000000000000000000000f` = `3e38` | `340282350000000000000000000000000000000f` = `3.4028235e38` |
+| in range? | yes — `3e38 < f32::MAX`, which is why #9907 correctly reports Chrome accepting it | no |
+| proposed fix | emit exponent notation | emit a value inside the type's range |
+
+The two are independent because #9907's fix does not change the value. Emitting
+`3.4028235e38f` instead of the expansion still gives Chrome a literal above
+`f32::MAX`, and Chrome still rejects it — measured, it is a row in the attached
+page.
+
+One correction that may be useful to #9907: it states that "Chrome, Dawn, and the
+WGSL specification accept them". That holds for its own example, which is in
+range, but not for the `f32::MAX` case, where Chrome rejects the literal for its
+magnitude rather than its length.
+
+**A fix that satisfies both** is to emit a spelling that is in range *and* short —
+`0x1.fffffep+127`, or `3.4028234663852886e38f`.
 
 **Repro steps**
 
