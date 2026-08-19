@@ -1,0 +1,64 @@
+{
+  "name": "matmul_bt_f32",
+  "entryPoint": "matmul_bt_f32",
+  "backend": "wgsl",
+  "schedule": "matmul",
+  "dtype": "f32",
+  "workgroup": [
+    16,
+    16,
+    1
+  ],
+  "dispatch": [
+    12,
+    16,
+    1
+  ],
+  "fragment": [
+    4,
+    4
+  ],
+  "workgroupBytes": 8192,
+  "axes": {
+    "m": 1024,
+    "n": 768,
+    "k": 512
+  },
+  "bindings": [
+    {
+      "name": "a",
+      "binding": 0,
+      "group": 0,
+      "mode": "read",
+      "elements": 524288,
+      "axes": [
+        "m",
+        "k"
+      ]
+    },
+    {
+      "name": "b",
+      "binding": 1,
+      "group": 0,
+      "mode": "read",
+      "elements": 393216,
+      "axes": [
+        "n",
+        "k"
+      ]
+    },
+    {
+      "name": "c",
+      "binding": 2,
+      "group": 0,
+      "mode": "write",
+      "elements": 786432,
+      "axes": [
+        "m",
+        "n"
+      ]
+    }
+  ],
+  "maskedLoads": [],
+  "pad": "zero"
+}

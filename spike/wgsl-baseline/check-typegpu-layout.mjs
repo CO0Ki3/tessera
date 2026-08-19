@@ -44,6 +44,7 @@ function declared(src) {
 const CASES = [
   ["matmul-direct.json", "matmul-direct.wgsl"],
   ["matmul-ragged-direct.json", "matmul-ragged-direct.wgsl"],
+  ["matmul-bt.json", "matmul-bt.wgsl"],
   ["softmax.json", "softmax.wgsl"],
   ["layernorm.json", "layernorm.wgsl"],
 ];

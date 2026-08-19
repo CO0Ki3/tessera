@@ -58,7 +58,7 @@ const TYPEGPU = await typegpuStatus();
 
 import {
   DIMS, randomF32, matmulReluF32, allClose, summarize,
-  dotAbsSum, withinErrorBound, bitExactCount,
+  dotAbsSum, withinErrorBound, bitExactCount, transposeF32,
 } from "./oracle.js";
 
 const logEl = document.getElementById("log");
@@ -137,6 +137,12 @@ async function main() {
     // If either fails, the adapter is wiring something differently than it says.
     { key: "typegpu", file: "./matmul-direct.wgsl", manifest: "./matmul-direct.json",
       runtime: "typegpu", label: "tessera direct, TypeGPU resources" },
+    // The SAME logical matrices, with B stored the other way round and read via
+    // `.tileT()`. Its output must be bit-identical to `direct` — that is the
+    // entire claim `.tileT()` makes, and this checks it on real data rather than
+    // from the generated address arithmetic.
+    { key: "bt", file: "./matmul-bt.wgsl", manifest: "./matmul-bt.json",
+      transposedB: true, label: "tessera: A\u00b7B\u1d40 (b stored [N,K])" },
     // Two-sided probe of the storage access mode (node make-probes.mjs).
     // A1 makes the fast kernel worse; A2 makes the slow kernel better. If the
     // gap is the access mode, they move toward each other and meet.
@@ -166,6 +172,8 @@ async function main() {
 
   const a = randomF32(M * K, 0x1234);
   const b = randomF32(K * N, 0x5678);
+  // Same numbers, stored [N, K] instead of [K, N].
+  const bT = transposeF32(b, K, N);
   const results = {};
   const runners = [];
 
@@ -209,7 +217,7 @@ async function main() {
     try {
       built = await makeRunner(ctx, {
         runtime: v.runtime, source, manifest: { ...man, entryPoint: entry },
-        inputs: [a, b], label: v.key,
+        inputs: v.transposedB ? [a, bT] : [a, b], label: v.key,
       });
     } catch (e) {
       write(`  ${v.label.padEnd(34)} <span class="bad">failed</span> ${e.message}`);
@@ -372,6 +380,14 @@ async function main() {
     write(`direct WGSL vs hand-written   bit-exact ${same} / ${results.hand.length}` +
           (same === results.hand.length
             ? `  <span class="ok">IDENTICAL</span>` : `  <span class="bad">DIVERGENT</span>`));
+  }
+  if (results.bt && results.direct) {
+    const same = bitExactCount(results.bt, results.direct);
+    write(`A\u00b7B\u1d40 vs A\u00b7B        bit-exact ${same} / ${results.direct.length}` +
+          (same === results.direct.length
+            ? `  <span class="ok">IDENTICAL</span>  <span class="dim">(same numbers, ` +
+              `b stored [N,K] and read with .tileT())</span>`
+            : `  <span class="bad">DIVERGENT — .tileT() is not reading the transpose</span>`));
   }
   if (results.typegpu && results.direct) {
     const same = bitExactCount(results.typegpu, results.direct);

@@ -424,3 +424,20 @@ export function absErrorAgainstScale(got, want) {
   }
   return { maxAbs, scale, ratio: scale > 0 ? maxAbs / scale : maxAbs, at };
 }
+
+/**
+ * Transpose a row-major [rows, cols] matrix into [cols, rows].
+ *
+ * Used to feed the same logical B to two kernels that store it differently:
+ * `matmul_relu_f32` declares b as [K, N] and `matmul_bt_f32` declares it [N, K]
+ * and reads it with `.tileT()`. Given B and Bᵀ, the two must agree bit for bit —
+ * which is the whole claim `.tileT()` makes, checked on real data rather than
+ * argued from the generated address.
+ */
+export function transposeF32(src, rows, cols) {
+  const out = new Float32Array(src.length);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) out[c * rows + r] = src[r * cols + c];
+  }
+  return out;
+}
