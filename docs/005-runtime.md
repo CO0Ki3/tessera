@@ -135,11 +135,39 @@ export const DEV = process.env.NODE_ENV === 'development';
 `env.js` is imported by `errors.js`, so it is in everything. In a browser
 `process` is undefined and the entire graph dies with a `ReferenceError`. The
 file's own comment names the assumption — *"pretty much every bundler replaces
-the expression below"* — which is true of the documented setups and means the
-package as published is not loadable by the runtime it targets. This is a real
-upstream defect, because it fails even with a correct import map:
-[`spike/upstream/typegpu-process-env-esm.md`](../spike/upstream/typegpu-process-env-esm.md).
-The fix upstream is one line.
+the expression below"*.
+
+**This was written up as an upstream defect, and it is not one.** The report was
+three sections of verified detail — reproduction, scope, a one-line fix — resting
+on a premise nobody had checked: *does this project intend to support what I am
+doing?* It does not, and never said it did:
+
+- the [getting-started docs](https://docs.swmansion.com/TypeGPU/getting-started)
+  document two paths, the CLI and a manual npm install, both ending in a build
+  step. No CDN, no `<script type="module">`, no import map;
+- the headline feature requires `unplugin-typegpu`, a bundler plugin, so a
+  bundler is the setup rather than an implementation detail of it;
+- `package.json` declares `engines.node`, no `browser`/`unpkg`/`jsdelivr` field,
+  and the tarball ships no UMD or IIFE build;
+- and the no-bundler path is already answered — esm.sh serves a transformed build
+  with `process.env` substituted (`grep -c process.env` → 0) and no bare
+  specifiers.
+
+`process.env.NODE_ENV` behind dead-code elimination is a long-standing
+convention; React ships the same thing. Filing it would have been reporting a
+package for following a convention, against a use case its documentation never
+offers.
+
+So the framing is not "we work around an upstream defect". It is **we consume
+TypeGPU in an unsupported way on purpose, and pay for that ourselves** — because
+a harness that needs the network to run its own kernels is worse than one that
+does not, and vendoring is a choice rather than a workaround.
+
+The lesson is the ordering. Every detail below this line was correct and
+irrelevant, because the premise above it was wrong; details cannot fail in a way
+that reveals a wrong premise. Compare `naga-f32-literal-range.md`, where the
+equivalent question — which behaviour does the spec mandate — could not be
+answered, so the issue asks it instead of assuming.
 
 ### Attempt 2 — three dependencies imported by bare specifier
 
