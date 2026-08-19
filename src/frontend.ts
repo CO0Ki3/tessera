@@ -22,7 +22,7 @@ import {
 } from "./ir.ts";
 
 import {
-  parseBody, BodyError, type Body, type RowBody, type Expr,
+  parseBody, BodyError, type Body, type RowBody, type Expr, type Step,
 } from "./body.ts";
 
 const PAD_NAMES = ["zero", "one", "negInf", "posInf"] as const;
@@ -289,7 +289,10 @@ function collectTransposed(parsed: RowBody, node: ts.Node): Set<string> {
     if (e.k === "rowOp") return walk(e.a);
   };
   for (const st of parsed.steps) {
-    if (st.k === "store") walk(st.value);
+    // A store of a FRAGMENT reads no binding directly — the bindings it depends on
+    // were read by the inner contraction that built the fragment, and those are
+    // walked as nested passes.
+    if (st.k === "store" && !st.fromFrag) walk(st.value as Expr);
     if (st.k === "reduce") {
       for (const u of st.updates) {
         if (u.k === "fold") walk(u.value);
@@ -333,12 +336,18 @@ function deriveAxisRoles(
   const parallel: string[] = [];
   const push = (xs: string[], n: string) => { if (!xs.includes(n)) xs.push(n); };
 
-  for (const st of parsed.steps) {
-    if (st.k === "reduce" || st.k === "store") push(contracted, st.axis);
+  // Nested passes contract too. `for n { for k { … } … }` reduces over both, and
+  // walking only the top level would report the inner axis as declared-and-unused.
+  const visit = (st: Step): void => {
+    if (st.k === "reduce" || st.k === "store") {
+      push(contracted, st.axis);
+      for (const p2 of st.inner) visit(p2);
+    }
     if (st.k === "store" || st.k === "storeFrag") {
       for (const c of st.coords) if (c.kind === "at") push(parallel, c.axis);
     }
-  }
+  };
+  for (const st of parsed.steps) visit(st);
 
   for (const n of [...contracted, ...parallel]) {
     if (!byName.has(n)) {

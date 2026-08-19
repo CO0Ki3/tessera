@@ -75,7 +75,7 @@ export function emitWGSL(k: KernelIR): string {
       if (e.k === "tile") { out2.add(e.binding); return; }
       if (e.k === "unary" || e.k === "rowOp") return walk(e.a);
     };
-    if (step.k === "store") walk(step.value);
+    if (step.k === "store" && !step.fromFrag) walk(step.value as Expr);
     if (step.k === "reduce") {
       for (const upd of step.updates) {
         if (upd.k === "fold") walk(upd.value);
@@ -364,6 +364,14 @@ export function emitWGSL(k: KernelIR): string {
           P(`${up.acc}[${i}] = ${up.acc}[${i}] + ` +
             `${blockExpr(up.a, c)} * ${blockExpr(up.b, c)};`, 4);
         } else {
+          // A tile fold reads one block per contraction step; a fragment fold
+          // reads a value already whole in registers. Inside a contraction loop
+          // only the first can occur — a fragment fold belongs to the OUTER pass,
+          // after its inner contraction has finished.
+          if (up.k === "foldFrag") {
+            throw new Error(`${k.name}: a fragment fold inside a contraction loop; `
+              + `the fragment is not complete until the loop ends.`);
+          }
           const v = blockExpr(up.value, c);
           P(up.op === "max"
             ? `${up.acc}[${i}] = max(${up.acc}[${i}], ${v});`
@@ -578,7 +586,9 @@ export function emitWGSL(k: KernelIR): string {
     for (const c of cells) {
       const g0 = out.axes[0] === sx.name ? T_("ci") : accCoord(out.axes[0], c[out.axes[0]]);
       const g1 = out.axes[1] === sx.name ? T_("ci") : accCoord(out.axes[1], c[out.axes[1]]);
-      emitStore(out, `(${g0})`, `(${g1})`, blockExpr(storeStep.value, c), 4);
+      emitStore(out, `(${g0})`, `(${g1})`,
+                storeStep.fromFrag ? fragExpr(storeStep.value as FragExpr, c)
+                                   : blockExpr(storeStep.value as Expr, c), 4);
     }
     P(`}`, 2);
     P(`}`, 1);

@@ -61,6 +61,13 @@ export type AccKind = "row" | "frag";
 export type Update =
   /** Fold one operand cell into a row accumulator. */
   | { readonly k: "fold"; readonly acc: string; readonly op: "max" | "sum"; readonly value: Expr }
+  /**
+   * The same fold over a FRAGMENT the pass just computed, rather than over a tile
+   * read from memory. The value is whole and register-resident, so this crosses
+   * lanes where the tile form reads one block per step.
+   */
+  | { readonly k: "foldFrag"; readonly acc: string; readonly op: "max" | "sum";
+      readonly value: FragExpr }
   /** Outer-product two operand slices into a 2-D fragment. */
   | { readonly k: "mma"; readonly acc: string; readonly a: Expr; readonly b: Expr };
 
@@ -80,10 +87,28 @@ export type FragExpr =
       readonly a: FragExpr; readonly row: RowExpr };
 
 export type Pass =
-  | { readonly k: "reduce"; readonly axis: string; readonly updates: readonly Update[] }
+  /**
+   * `locals` and `inner` are how one contraction sits inside another's loop.
+   *
+   * `for n { let s = zeros(...); for k { s = mma(...) } ; mx = rowMax(s, mx) }` —
+   * the scores for one block of `n` are computed by an inner contraction over
+   * `k`, folded into the outer accumulator, and thrown away. The fragment is a
+   * temporary within one outer iteration, which is the easier half of composing
+   * contractions: nothing is carried across, so nothing has to survive a change
+   * of register layout.
+   *
+   * Both are empty for a flat pass, which is every kernel written before this.
+   */
+  | { readonly k: "reduce"; readonly axis: string;
+      readonly locals: readonly Acc[]; readonly inner: readonly Pass[];
+      readonly updates: readonly Update[] }
   /** A store inside a pass, one operand cell at a time. */
   | { readonly k: "store"; readonly axis: string; readonly binding: string;
-      readonly coords: readonly Coord[]; readonly value: Expr };
+      readonly locals: readonly Acc[]; readonly inner: readonly Pass[];
+      readonly coords: readonly Coord[];
+      /** Which of the two `value` is. A store inside a pass that ran an inner
+       *  contraction writes the fragment that contraction built. */
+      readonly fromFrag: boolean; readonly value: Expr | FragExpr };
 
 /**
  * A step in the body, in SOURCE ORDER.
@@ -345,9 +370,49 @@ export function parseBody(
   const readUpdatesAndStore = (block: ts.Statement, axis: string): Pass => {
     if (!ts.isBlock(block)) bad(block, `a pass body must be a block`);
     const updates: Update[] = [];
-    let store: { binding: string; coords: readonly Coord[]; value: Expr } | undefined;
+    const locals: Acc[] = [];
+    const inner: Pass[] = [];
+    let store: { binding: string; coords: readonly Coord[];
+                 fromFrag: boolean; value: Expr | FragExpr } | undefined;
 
     for (const st of block.statements) {
+      // A LOCAL accumulator: the scores for this block of the outer axis, which
+      // the inner contraction fills and the outer fold consumes. Scoped to the
+      // pass, unlike the accumulators declared at the top of the body, because it
+      // does not survive the iteration.
+      if (ts.isVariableStatement(st)) {
+        for (const d of st.declarationList.declarations) {
+          if (!ts.isIdentifier(d.name)) bad(d, `destructuring is not admitted here`);
+          const init = d.initializer;
+          if (!init || !ts.isCallExpression(init) || callee(init) !== "zeros") {
+            bad(d, `inside a pass, a declaration is a fragment accumulator: ` +
+                   `\`let s = zeros(bm, bn, dtype)\``);
+          }
+          locals.push({ name: d.name.text, kind: "frag", init: "zero" });
+          rowNames.add(d.name.text);
+          fragNames.add(d.name.text);
+        }
+        continue;
+      }
+
+      // A NESTED contraction. `for n { … for k { … } … }`: the inner pass runs to
+      // completion for each step of the outer one, which is what makes composing
+      // contractions possible at all — the inner fragment is whole before the
+      // outer fold reads it.
+      if (ts.isForOfStatement(st)) {
+        const it = st.expression;
+        if (!ts.isPropertyAccessExpression(it) || !ts.isIdentifier(it.expression)
+            || it.expression.text !== "reduce") {
+          bad(st, `a nested pass iterates \`reduce.<axis>\`, got \`${it.getText()}\``);
+        }
+        if (it.name.text === axis) {
+          bad(st, `this pass already reduces over "${axis}"; a nested pass must ` +
+                  `contract a different axis`);
+        }
+        inner.push(readUpdatesAndStore(st.statement, it.name.text));
+        continue;
+      }
+
       if (ts.isExpressionStatement(st) && ts.isBinaryExpression(st.expression)
           && st.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
         const lhs = st.expression.left, rhs = st.expression.right;
@@ -374,10 +439,11 @@ export function parseBody(
             b: parseExpr(rhs.arguments[1], rowNames, bindings, padNames),
           });
         } else {
-          updates.push({
-            k: "fold", acc: lhs.text, op: REDUCERS[fn],
-            value: parseExpr(rhs.arguments[0], rowNames, bindings, padNames),
-          });
+          updates.push(bottomsOutAtFrag(rhs.arguments[0], fragNames)
+            ? { k: "foldFrag", acc: lhs.text, op: REDUCERS[fn],
+                value: parseFrag(rhs.arguments[0], rowNames) }
+            : { k: "fold", acc: lhs.text, op: REDUCERS[fn],
+                value: parseExpr(rhs.arguments[0], rowNames, bindings, padNames) });
         }
         continue;
       }
@@ -393,10 +459,14 @@ export function parseBody(
           bad(st, `.store() must go to a binding declared in spec.bindings`);
         }
         if (store) bad(st, `more than one store in a pass`);
+        const sarg = st.expression.arguments[0];
+        const fromFrag = bottomsOutAtFrag(sarg, fragNames);
         store = {
           binding: recv.text,
           coords: slot.arguments.map((a) => readCoord(a)),
-          value: parseExpr(st.expression.arguments[0], rowNames, bindings, padNames),
+          fromFrag,
+          value: fromFrag ? parseFrag(sarg, rowNames)
+                          : parseExpr(sarg, rowNames, bindings, padNames),
         };
         continue;
       }
@@ -405,9 +475,9 @@ export function parseBody(
     }
 
     if (store && updates.length) bad(block, `a pass either reduces or stores, not both`);
-    if (store) return { k: "store", axis, ...store };
+    if (store) return { k: "store", axis, locals, inner, ...store };
     if (!updates.length) bad(block, `this pass does nothing`);
-    return { k: "reduce", axis, updates };
+    return { k: "reduce", axis, locals, inner, updates };
   };
 
   for (const st of body.statements) {
