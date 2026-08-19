@@ -327,7 +327,7 @@ is routinely written as one, but it exceeds f32::MAX (3.4028234663852886e38) and
 round-trip. **naga validated all 57 occurrences and reported success**; only Tint rejected
 it. A validator that accepts what the target rejects converts a build-time error into a
 runtime one, so the check moved into the compiler (`assertF32Literals`) and into the suite.
-Written up for reporting in `spike/upstream/naga-f32-literal-range.md`.
+Reported upstream as [gfx-rs/wgpu#10106](https://github.com/gfx-rs/wgpu/issues/10106).
 
 ---
 

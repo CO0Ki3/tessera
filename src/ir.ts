@@ -39,6 +39,11 @@ export const PAD_LITERAL: Record<PadName, string> = {
   // it outright — "value ... cannot be represented as 'f32'". naga validated it
   // without complaint, so the emitted WGSL passed every local check and only
   // failed in the browser. See assertF32Literals below.
+  //
+  // naga emits that same literal from `wgsl-out` given f32::MAX, which is
+  // gfx-rs/wgpu#10106 — reported from here. Until it lands, anything that goes
+  // through that backend can produce a shader Chrome refuses.
+  //   https://github.com/gfx-rs/wgpu/issues/10106
   negInf: "-3.4028234663852886e38",
   posInf: "3.4028234663852886e38",
 };
@@ -50,6 +55,9 @@ export const PAD_LITERAL: Record<PadName, string> = {
  * literal and reported "Validation successful", and the failure surfaced only as
  * a shader compilation error in Chrome. So the check lives here, where it costs
  * nothing and catches the whole class rather than the one instance.
+ *
+ * Reported upstream as gfx-rs/wgpu#10106:
+ *   https://github.com/gfx-rs/wgpu/issues/10106
  */
 export const F32_MAX = 3.4028234663852886e38;
 

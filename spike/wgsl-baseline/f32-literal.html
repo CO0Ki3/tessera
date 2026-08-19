@@ -34,7 +34,7 @@ $ naga in.wgsl out.wgsl &amp;&amp; grep 'o\[0\]' out.wgsl
   turned it into. If row 1 is accepted and row 2 is rejected, the rewrite is what
   broke the shader. Row 2's string is pasted from the command above — it is not a
   spelling anyone chose.
-  Open this in both browsers. See <code>spike/upstream/naga-f32-literal-range.md</code>.
+  Open this in both browsers. Reported as <a href="https://github.com/gfx-rs/wgpu/issues/10106">gfx-rs/wgpu#10106</a>.
 </p>
 <table id="t"><tr><th>literal<th>expect<th>this browser</table>
 <pre id="ua"></pre>

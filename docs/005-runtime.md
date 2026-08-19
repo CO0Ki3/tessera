@@ -165,7 +165,7 @@ does not, and vendoring is a choice rather than a workaround.
 
 The lesson is the ordering. Every detail below this line was correct and
 irrelevant, because the premise above it was wrong; details cannot fail in a way
-that reveals a wrong premise. Compare `naga-f32-literal-range.md`, where the
+that reveals a wrong premise. Compare [gfx-rs/wgpu#10106](https://github.com/gfx-rs/wgpu/issues/10106), where the
 equivalent question — which behaviour does the spec mandate — could not be
 answered, so the issue asks it instead of assuming.
 
