@@ -8,10 +8,9 @@
   .ok { color: #197f19 } .bad { color: #b00 } .dim { color: #777 }
   pre { background: #f4f4f4; padding: .6rem; overflow-x: auto }
 </style>
-<h3>f32 literal range <span class="dim">— rev 2, 6 rows</span></h3>
+<h3>f32 literal range <span class="dim">— rev 3, 7 rows</span></h3>
 <p class="dim">
-  If you do not see six rows and a row labelled <b>what naga's wgsl-out emits</b>,
-  you are looking at a cached copy.
+  If you do not see seven rows, you are looking at a cached copy.
 </p>
 <p class="dim">
   naga (Firefox, Servo, Deno) and Tint (Chrome) draw the upper bound of a float
@@ -22,8 +21,21 @@
   maximum.
 </p>
 <p class="dim">
-  Row 2 is the one that matters: it is not a spelling anyone chose, it is what
-  naga's <code>wgsl-out</code> writes when the source said <code>0x1.fffffep+127</code>.
+  <b>This page cannot run naga.</b> It only calls
+  <code>createShaderModule</code> in whichever browser opens it, so it measures
+  the browser half. The naga half is one command, run separately:
+</p>
+<pre>$ cat in.wgsl
+@group(0) @binding(0) var&lt;storage, read_write&gt; o : array&lt;f32&gt;;
+@compute @workgroup_size(1) fn main() { o[0] = 0x1.fffffep+127; }
+
+$ naga in.wgsl out.wgsl &amp;&amp; grep 'o\[0\]' out.wgsl
+    o[0] = 340282350000000000000000000000000000000f;</pre>
+<p class="dim">
+  Rows 1 and 2 are that pair: row 1 is the <em>input</em>, row 2 is what naga
+  turned it into. If row 1 is accepted and row 2 is rejected, the rewrite is what
+  broke the shader. Row 2's string is pasted from the command above — it is not a
+  spelling anyone chose.
   Open this in both browsers. See <code>spike/upstream/naga-f32-literal-range.md</code>.
 </p>
 <table id="t"><tr><th>literal<th>expect<th>this browser</table>
@@ -32,7 +44,10 @@
 const MAX  = "3.4028234663852886e38";   // f32::MAX exactly
 const MID  = "3.4028235677973366e38";   // midpoint between MAX and 2^128
 const CASES = [
-  [MAX,               "valid",   "the exact maximum"],
+  // The INPUT: f32::MAX as a hex float, which has no rounding ambiguity at all.
+  // Both implementations should take this, and it is what the repro feeds naga.
+  ["0x1.fffffep+127",  "valid",  "f32::MAX as a hex float — the input naga was given"],
+  [MAX,               "valid",   "the same value as an exact decimal"],
   // This is not a hypothetical spelling. It is what naga's own wgsl-out writes
   // when the input said 0x1.fffffep+127, i.e. exactly f32::MAX. If this row is
   // rejected, naga emits WGSL that this browser will not compile.

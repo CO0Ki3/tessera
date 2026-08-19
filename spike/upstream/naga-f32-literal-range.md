@@ -176,10 +176,15 @@ has to serialize a value in the band.
 which both implementations already reject. Nothing exercises the region between
 `f32::MAX` and the midpoint.
 
-*Repro page.* A single self-contained HTML file that runs the six cases through
+*Repro page.* A single self-contained HTML file that runs the cases through
 `createShaderModule` and prints each browser's verdict, for pasting results
-without describing them:
+without describing them. It covers the **browser half only** — it cannot run
+naga, so the `naga in.wgsl out.wgsl` step above is what supplies row 2's string:
 <!-- attach f32-literal.html, or inline it here -->
+
+Its first two rows are the input/output pair: `0x1.fffffep+127` as given to naga,
+and `340282350000000000000000000000000000000f` as naga wrote it. Both browsers
+take the input; only Firefox takes the output.
 
 **Platform**
 
