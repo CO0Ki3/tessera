@@ -356,9 +356,8 @@ function deriveAxisRoles(
     fail(node, `a kernel needs 1-3 parallel axes (WebGPU dispatches in 3 dimensions), ` +
                `and the body's store uses ${parallel.length}`);
   }
-  if (contracted.length !== 1) {
-    fail(node, `this build supports exactly 1 reduction axis, and the body reduces ` +
-               `over ${contracted.length} (${contracted.join(", ") || "none"})`);
+  if (contracted.length < 1) {
+    fail(node, `a kernel reduces over at least one axis, and this body reduces over none`);
   }
   // Reduced and stored along, WITHIN ONE CONTRACTION: `c[m,n] = sum_n …` sums
   // over the axis it also indexes the output by. That is not unimplemented, it is

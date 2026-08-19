@@ -265,6 +265,27 @@ console.log("\nharness artifacts");
   }
 }
 
+// ---- two reduction axes in one kernel -------------------------------------
+// One plan per reduction axis. The lane geometry is shared by construction, so
+// the plans differ only in what they stage and how far they walk -- and the
+// second is the visible one: twoaxis reduces over n (768) and k (512), so the
+// generated kernel must contain loops over both bounds and not two over one.
+console.log("\ntwo reduction axes");
+try {
+  execFileSync("npx", ["tsx", "src/cli.ts", "build", "examples/twoaxis.kernel.ts", "-o", out],
+               { stdio: "pipe" });
+  const wgsl = readFileSync(join(out, "twoaxis_f32.wgsl"), "utf8");
+  const bounds = [...wgsl.matchAll(/t_cb < (\d+)u/g)].map((m) => m[1]);
+  const uniq = [...new Set(bounds)].sort();
+  if (uniq.length !== 2 || uniq[0] !== "512" || uniq[1] !== "768") {
+    bad(`expected contraction loops over 768 and 512, got [${bounds.join(", ")}]`);
+  } else {
+    ok(`contractions walk their own extents: ${bounds.join(", ")} (n=768, k=512)`);
+  }
+} catch (e) {
+  bad(`twoaxis:\n${e.stdout?.toString() ?? e.message}`);
+}
+
 // ---- two identities in one kernel -----------------------------------------
 // The identity is the binding's, not the kernel's. maxsum feeds p to a MAX and q
 // to a SUM through the same ragged axis, so a masked lane of p must read negative

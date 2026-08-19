@@ -21,7 +21,9 @@
 
 import { PAD_LITERAL, type AxisIR, type BindingIR, type KernelIR } from "./ir.ts";
 import { planContraction, type ContractionPlan } from "./contraction.ts";
-import type { Expr, FragExpr, RowExpr, Update } from "./body.ts";
+import type {
+  Expr, FragExpr, RowExpr, Update, Step,
+} from "./body.ts";
 
 export function emitWGSL(k: KernelIR): string {
   const [wgx, wgy] = k.workgroup;
@@ -47,12 +49,70 @@ export function emitWGSL(k: KernelIR): string {
     b.transposed ? { ...b, axes: [b.axes[1], b.axes[0]] as const } : b;
   const byName = (n: string) => logical(memOf(n));
 
-  const plan = planContraction(
-    accumulate, contract,
-    reads.map((b) => ({ binding: b.name, axes: logical(b).axes })),
-    k.workgroup,
-    out.axes[1],                      // the output's last index is contiguous
-  );
+  /**
+   * One plan per reduction axis.
+   *
+   * A pass over `n` and a pass over `k` stage different operands and walk
+   * different extents, but they share their LANE geometry: `planContraction`
+   * derives `perAxis`, `contractLanes` and `fragment` from `accumulate` and the
+   * contiguous axis alone, and neither depends on which axis is contracted. That
+   * is what makes several contractions in one body tractable without touching the
+   * register layout — and it is checked below rather than assumed, because the
+   * whole emitter reads the shared geometry off one of them.
+   */
+  /**
+   * Which bindings a pass actually reads.
+   *
+   * With one contraction per kernel every read binding took part in it, so the
+   * plan could be built from all of them. With two, a pass over `n` may read only
+   * `p` while a pass over `k` reads only `q` — and handing a pass an operand whose
+   * axes it does not walk asks for the global coordinate of an axis that is
+   * neither accumulated nor contracted here, which has no meaning.
+   */
+  const readsOf = (step: Step): string[] => {
+    const out2 = new Set<string>();
+    const walk = (e: Expr): void => {
+      if (e.k === "tile") { out2.add(e.binding); return; }
+      if (e.k === "unary" || e.k === "rowOp") return walk(e.a);
+    };
+    if (step.k === "store") walk(step.value);
+    if (step.k === "reduce") {
+      for (const upd of step.updates) {
+        if (upd.k === "fold") walk(upd.value);
+        if (upd.k === "mma") { walk(upd.a); walk(upd.b); }
+      }
+    }
+    return [...out2];
+  };
+  const readsByAxis = new Map<string, Set<string>>();
+  for (const st of body.steps) {
+    if (st.k !== "reduce" && st.k !== "store") continue;
+    const set = readsByAxis.get(st.axis) ?? new Set<string>();
+    for (const b of readsOf(st)) set.add(b);
+    readsByAxis.set(st.axis, set);
+  }
+  const planFor = new Map(k.reduce.map((ax) => {
+    const names = readsByAxis.get(ax.name) ?? new Set(reads.map((b) => b.name));
+    return [ax.name, planContraction(
+      accumulate, ax,
+      reads.filter((b) => names.has(b.name)).map((b) => ({ binding: b.name, axes: logical(b).axes })),
+      k.workgroup,
+      out.axes[1],                    // the output's last index is contiguous
+    )] as const;
+  }));
+  const plan = planFor.get(contract.name)!;
+  for (const [ax, p2] of planFor) {
+    const same = JSON.stringify(p2.lanes.perAxis) === JSON.stringify(plan.lanes.perAxis)
+              && p2.lanes.fragment === plan.lanes.fragment
+              && p2.lanes.contractLanes.join() === plan.lanes.contractLanes.join();
+    if (!same) {
+      throw new Error(
+        `${k.name}: the plan for reduction axis "${ax}" has a different lane layout ` +
+        `from "${contract.name}". Contractions in one body must share it; ` +
+        `redistributing a fragment between layouts is not implemented.`);
+    }
+  }
+  const axisIR = (n: string) => k.reduce.find((a) => a.name === n)!;
 
   const L: string[] = [];
   const P = (s = "", i = 0) => L.push(s ? "  ".repeat(i) + s : "");
@@ -206,10 +266,17 @@ export function emitWGSL(k: KernelIR): string {
 
   // ---- the contraction --------------------------------------------------------
   const reduceSteps = body.steps.filter((s) => s.k === "reduce");
-  for (const step of reduceSteps) emitContractionPass(step.updates);
+  for (const step of reduceSteps) emitContractionPass(step.axis, step.updates);
 
-  function emitContractionPass(updates: readonly Update[]): void {
-    P(`for (var ${T_("cb")} : u32 = 0u; ${T_("cb")} < ${u(contract.extent)}; ${T_("cb")} = ${T_("cb")} + ${u(contractBlock)}) {`, 1);
+  function emitContractionPass(axisName: string, updates: readonly Update[]): void {
+    const cx = axisIR(axisName);
+    const cplan = planFor.get(axisName)!;
+    const staged = cplan.operands.filter((o) => o.staged);
+    const cBlock = cx.block;
+    // How many sequential steps this invocation walks for THIS axis. Derived
+    // from the pass's own block and the lanes the contraction was split across.
+    const cDepth = cBlock / contractLaneW;
+    P(`for (var ${T_("cb")} : u32 = 0u; ${T_("cb")} < ${u(cx.extent)}; ${T_("cb")} = ${T_("cb")} + ${u(cBlock)}) {`, 1);
 
     for (const o of staged) {
       const bd = byName(o.binding);
@@ -218,7 +285,7 @@ export function emitWGSL(k: KernelIR): string {
       P(`let ${T_("r")} = ${T_("i")} / ${u(dims[1])};`, 3);
       P(`let ${T_("cc")} = ${T_("i")} % ${u(dims[1])};`, 3);
       const coord = (axis: string, local: string) =>
-        axis === contract.name ? `${T_("cb")} + ${local}` : `base_${axis} + ${local}`;
+        axis === cx.name ? `${T_("cb")} + ${local}` : `base_${axis} + ${local}`;
       P(`let ${T_("gr")} = ${coord(bd.axes[0], T_("r"))};`, 3);
       P(`let ${T_("gc")} = ${coord(bd.axes[1], T_("cc"))};`, 3);
       emitLoad(`${stageName(o.binding)}[${T_("i")}]`, bd, T_("gr"), T_("gc"), 3);
@@ -246,22 +313,22 @@ export function emitWGSL(k: KernelIR): string {
           : `let ${nm} = ${lane} * ${u(sl.slice)} + ${u(i)};`, 2);
       }
     }
-    P(`for (var ${T_("s")} : u32 = 0u; ${T_("s")} < ${u(seqDepth)}; ${T_("s")} = ${T_("s")} + 1u) {`, 2);
+    P(`for (var ${T_("s")} : u32 = 0u; ${T_("s")} < ${u(cDepth)}; ${T_("s")} = ${T_("s")} + 1u) {`, 2);
     // The contract coordinate this invocation handles at this step. When lanes split
     // the contraction each lane takes a contiguous run, which keeps the reads coalesced.
-    const laneId = plan.lanes.contractLanes.includes("x") ? "tx" : "ty";
+    const laneId = cplan.lanes.contractLanes.includes("x") ? "tx" : "ty";
     // Two coordinates, not one. `lc` is the offset INSIDE the contract block —
     // what a staged read wants — and `ci` is the global index a direct read wants.
     // Deriving the first from the second meant emitting `ci - cb`, which is an add
     // and a subtract that cancel, repeated once per staged operand slice, and which
     // stops the address being an obvious affine function of the loop variable.
-    P(plan.lanes.needsCombine
-      ? `let ${T_("lc")} = ${laneId} * ${u(seqDepth)} + ${T_("s")};`
+    P(cplan.lanes.needsCombine
+      ? `let ${T_("lc")} = ${laneId} * ${u(cDepth)} + ${T_("s")};`
       : `let ${T_("lc")} = ${T_("s")};`, 3);
     P(`let ${T_("ci")} = ${T_("cb")} + ${T_("lc")};`, 3);
 
     // One read per operand per combination of the accumulate axes it mentions.
-    for (const o of plan.operands) {
+    for (const o of cplan.operands) {
       const bd = byName(o.binding);
       const ownAxes = bd.axes.filter((a) => sliceOf.has(a));
       const combos: Record<string, number>[] = [{}];
@@ -281,8 +348,8 @@ export function emitWGSL(k: KernelIR): string {
             ? `let ${name} = ${stageName(o.binding)}[${base} + ${T_("lc")}];`
             : `let ${name} = ${stageName(o.binding)}[${T_("lc")} * ${u(dims[1])} + ${base}];`, 4);
         } else {
-          const g0 = bd.axes[0] === contract.name ? T_("ci") : accCoord(bd.axes[0], c[bd.axes[0]]);
-          const g1 = bd.axes[1] === contract.name ? T_("ci") : accCoord(bd.axes[1], c[bd.axes[1]]);
+          const g0 = bd.axes[0] === cx.name ? T_("ci") : accCoord(bd.axes[0], c[bd.axes[0]]);
+          const g1 = bd.axes[1] === cx.name ? T_("ci") : accCoord(bd.axes[1], c[bd.axes[1]]);
           emitLoad(`let ${name}`, bd, `(${g0})`, `(${g1})`, 4);
         }
       }
@@ -309,7 +376,7 @@ export function emitWGSL(k: KernelIR): string {
     P(`}`, 1);
     P();
 
-    if (plan.lanes.needsCombine) emitCombine(updates);
+    if (cplan.lanes.needsCombine) emitCombine(updates);
   }
 
   /**
@@ -458,17 +525,22 @@ export function emitWGSL(k: KernelIR): string {
   // Whether the store walks the contraction is a property of the output's axes:
   // if the output is indexed BY the contract axis it must, and if it is not it
   // writes the fragment once. Nobody chooses this either.
-  const storeWalksContraction = out.axes.includes(contract.name);
   const storeStep = body.steps.find((x) => x.k === "store" || x.k === "storeFrag");
   if (!storeStep) throw new Error(`${k.name}: no store`);
+  // A store inside a loop walks THAT loop's axis, which need not be the kernel's
+  // only reduction axis any more.
+  const sx = storeStep.k === "store" ? axisIR(storeStep.axis) : contract;
+  const splan = planFor.get(sx.name)!;
+  const sDepth = sx.block / contractLaneW;
+  const storeWalksContraction = out.axes.includes(sx.name);
 
   if (storeWalksContraction && storeStep.k === "store") {
-    P(`for (var ${T_("cb")} : u32 = 0u; ${T_("cb")} < ${u(contract.extent)}; ${T_("cb")} = ${T_("cb")} + ${u(contractBlock)}) {`, 1);
+    P(`for (var ${T_("cb")} : u32 = 0u; ${T_("cb")} < ${u(sx.extent)}; ${T_("cb")} = ${T_("cb")} + ${u(sx.block)}) {`, 1);
     // The part of a staged address that does not move with the contract step is
     // loop-invariant by construction — it is the invocation's own slice — so it is
     // computed once rather than once per step per operand.
     const hoisted = new Map<string, string>();
-    for (const o of staged) {
+    for (const o of splan.operands.filter((o) => o.staged)) {
       const bd = byName(o.binding);
       const dims = bd.axes.map((a) => axisOf.get(a)!.block);
       const accAxis = bd.axes.find((a) => sliceOf.has(a))!;
@@ -484,28 +556,28 @@ export function emitWGSL(k: KernelIR): string {
           : `let ${nm} = ${lane} * ${u(sl.slice)} + ${u(i)};`, 2);
       }
     }
-    P(`for (var ${T_("s")} : u32 = 0u; ${T_("s")} < ${u(seqDepth)}; ${T_("s")} = ${T_("s")} + 1u) {`, 2);
-    const laneId = plan.lanes.contractLanes.includes("x") ? "tx" : "ty";
+    P(`for (var ${T_("s")} : u32 = 0u; ${T_("s")} < ${u(sDepth)}; ${T_("s")} = ${T_("s")} + 1u) {`, 2);
+    const laneId = splan.lanes.contractLanes.includes("x") ? "tx" : "ty";
     // Two coordinates, not one. `lc` is the offset INSIDE the contract block —
     // what a staged read wants — and `ci` is the global index a direct read wants.
     // Deriving the first from the second meant emitting `ci - cb`, which is an add
     // and a subtract that cancel, repeated once per staged operand slice, and which
     // stops the address being an obvious affine function of the loop variable.
-    P(plan.lanes.needsCombine
-      ? `let ${T_("lc")} = ${laneId} * ${u(seqDepth)} + ${T_("s")};`
+    P(splan.lanes.needsCombine
+      ? `let ${T_("lc")} = ${laneId} * ${u(sDepth)} + ${T_("s")};`
       : `let ${T_("lc")} = ${T_("s")};`, 3);
     P(`let ${T_("ci")} = ${T_("cb")} + ${T_("lc")};`, 3);
-    for (const o of plan.operands) {
+    for (const o of splan.operands) {
       const bd = byName(o.binding);
       for (const c of cells) {
-        const g0 = bd.axes[0] === contract.name ? T_("ci") : accCoord(bd.axes[0], c[bd.axes[0]]);
-        const g1 = bd.axes[1] === contract.name ? T_("ci") : accCoord(bd.axes[1], c[bd.axes[1]]);
+        const g0 = bd.axes[0] === sx.name ? T_("ci") : accCoord(bd.axes[0], c[bd.axes[0]]);
+        const g1 = bd.axes[1] === sx.name ? T_("ci") : accCoord(bd.axes[1], c[bd.axes[1]]);
         emitLoad(`let ${operandVal(o.binding, c)}`, bd, `(${g0})`, `(${g1})`, 4);
       }
     }
     for (const c of cells) {
-      const g0 = out.axes[0] === contract.name ? T_("ci") : accCoord(out.axes[0], c[out.axes[0]]);
-      const g1 = out.axes[1] === contract.name ? T_("ci") : accCoord(out.axes[1], c[out.axes[1]]);
+      const g0 = out.axes[0] === sx.name ? T_("ci") : accCoord(out.axes[0], c[out.axes[0]]);
+      const g1 = out.axes[1] === sx.name ? T_("ci") : accCoord(out.axes[1], c[out.axes[1]]);
       emitStore(out, `(${g0})`, `(${g1})`, blockExpr(storeStep.value, c), 4);
     }
     P(`}`, 2);

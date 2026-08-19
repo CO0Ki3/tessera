@@ -761,10 +761,51 @@ criterion that is easy to state, standing in for one that is true.** The sharp
 check here is the invariant — rows summing to 1 needs no reference at all, and a
 wrong cross-lane fold breaks it outright.
 
+### G4's two prerequisites, both closed
+
+G4 needs three things and only the third is the hard one. The first two are done.
+
+**One identity per BINDING, not per kernel.** The front end used to collapse every
+named identity and refuse anything but a singleton. `examples/maxsum.kernel.ts` is
+the case its own error message named:
+
+```
+y[m,n] = (p[m,n] - max_n p[m,:]) / sum_n q[m,:]
+```
+
+`p` feeds a MAX and `q` a SUM through the same ragged axis, so a masked lane of
+`p` must read −∞ and one of `q` must read 0. Emitted: 12 masked reads of `p` carry
+`-3.4028234663852886e38`, 12 of `q` carry `0.0`. Every existing kernel's WGSL is
+byte-identical afterwards except its header comment, which now names which binding
+got which identity. The MLIR backend carries one and refuses a two-identity body
+by name rather than picking one.
+
+**More than one reduction axis.** `examples/twoaxis.kernel.ts` reduces over `n`
+(768) and `k` (512) independently, and the generated kernel walks both extents.
+The emitter builds one plan per axis, and this is cheaper than it sounds because
+**the lane geometry does not depend on the contracted axis at all** —
+`planContraction` derives `perAxis`, `contractLanes` and `fragment` from
+`accumulate` and the contiguous axis alone. So the plans differ only in what they
+stage and how far they walk, which is checked rather than assumed.
+
+The one thing beyond bookkeeping: a plan is built from the bindings its **own**
+pass reads. With a single contraction every read binding took part in it; with
+two, handing a pass an operand whose axes it does not walk asks for the global
+coordinate of an axis that is neither accumulated nor contracted there. That was
+the only crash the change produced, and it names the assumption that had been
+invisible.
+
+Again byte-identical: all six existing kernels unchanged.
+
 ### G4 is what is left
 
-Composing two contractions in one body. `planContraction` is already per
-contraction, but `plan.lanes` is kernel-global: it decides which invocation owns
-which output element, and a second contraction consuming the first's fragment
-needs that fragment redistributed when the two layouts disagree. That is the
-flash-attention register-layout problem, and nothing in G1–G3 touched it.
+Composing two contractions where the second **consumes the first's fragment**.
+`plan.lanes` decides which invocation owns which output element, and a handoff
+needs that fragment redistributed when the two layouts disagree — the
+flash-attention register-layout problem. Nothing in G1–G3 or the two
+prerequisites touched it; the emitter now refuses a mismatch by name rather than
+emitting for the wrong layout.
+
+Attention also needs a **nested** reduction — `for n { for d { … } … }` — which
+the parser does not admit inside a pass. That nesting *is* the handoff, so it is
+part of G4 rather than another prerequisite.
