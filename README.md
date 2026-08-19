@@ -118,6 +118,7 @@ Full accounting, including what three research passes could not look at and why,
 | `examples/matmul.kernel.ts` | 1024x768x512, bit-identical to a hand-written WGSL kernel and at parity on throughput (6 quanta against 7, inside one) |
 | `examples/matmul-ragged.kernel.ts` | 1000x750x500, no axis dividing its block, 750000/750000 bit-exact |
 | `examples/softmax.kernel.ts` | a second kernel family, 1024x750 with a ragged reduction axis, every row normalised and within 6 ULP |
+| `examples/attention.kernel.ts` | `softmax(Q·Kᵀ)·V` — two contractions accumulating over different axis sets, with the score fragment redistributed through workgroup memory between them; 0 violations of the f32 error bound |
 | backends | direct WGSL (default) and MLIR (`--backend=mlir`), bit-identical to each other |
 | `spike/wgsl-baseline/typegpu-runner.js` | all four kernels with TypeGPU owning buffers, layout, bind group and readback — bit-identical output, and free, sharing the raw runner's timed path verbatim |
 | `npm test` | MLIR byte-identity against a verified reference, 7 rejected negatives, mask placement, direct-backend validity, manifest↔WGSL↔TypeGPU layout agreement |

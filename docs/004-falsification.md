@@ -867,7 +867,77 @@ The emitter now also **refuses a kernel over the floor** rather than reporting t
 number and emitting it. The harness had always checked at run time; a kernel that
 cannot be dispatched anywhere should not compile.
 
-### G4 is what is left
+### G4 closed: attention
+
+```
+attention_f32   256 lines, 12 barriers, 12288 B of the 16384 B floor
+dispatch [4, 32, 1]   workgroup 16x16   fragment 2x2
+
+V = 1              every output 1   [0.999998391, 1.000001550]   PASS
+TypeGPU vs raw     65536 / 65536 bit-exact                       IDENTICAL
+error bound        0 violations / 65536, worst ratio 0.0289      PASS
+```
+
+`P` comes out of `S = Q·Kᵀ` with `n` on the x lane and `O = P·V` sums along `n`,
+so the fragment goes through workgroup memory — exactly as an operand read from a
+buffer is staged, with registers as the source. After that the block is an
+ordinary matmul.
+
+The tile is 32×32×16 because a `bm × bn` fragment at 64×64 is 16384 B on its own.
+That was computed before any of it was built; the alternative order was to
+implement the staging and then discover the kernel undispatchable.
+
+**The check that found the truth needed no reference at all.** With every `V`
+entry 1, every output must be exactly 1, because the softmax weights sum to 1 and
+a convex combination of ones is one. It tests the normalisation, the
+redistribution and the `P·V` contraction together and does not care what the
+scores are — so it separates "the weights are wrong" from "V is read wrong". It
+passed, which said the kernel was right while the ULP check was still saying FAIL.
+
+**And the ULP check was the fourth time this project picked a criterion that is
+easy to state over one that is true.** It reported 120658 ULP against a bound of
+39, on a `maxAbsDiff` of **1.01e-6**. `O` is a convex combination of zero-mean
+data, so a great many outputs land near zero, where relative error is meaningless
+and one part in a million reads as a hundred thousand ULP. Precisely the 912
+spurious matmul failures of `docs/002` §2, with a different operator.
+
+What f32 actually permits has two terms, and the page now checks it:
+
+```
+|gpu - cpu|  <=  gamma_N · SUM|p·v|  +  |s - rowmax|·u · |O|
+                 ─────────────────      ──────────────────────
+                 N products accumulated  exp's own error, which grows
+                 (the matmul's bound)    with its argument, carried
+                                         through a weighted average
+```
+
+Worst ratio 0.0289 — the kernel uses 3% of what the arithmetic allows.
+
+### One diagnosis on the way was wrong
+
+`collectTransposed` did skip nested passes, and fixing it was right: the logical
+and memory axis orders are now genuinely separate. But it was **not** the bug.
+The old code staged `k` as `[n][d]` and read it as `[n][d]`; the new code stages
+`[d][n]` and reads `[d][n]`. Both index the same element. The fix was a numerical
+no-op, which is why three runs produced byte-identical output and why "the fix
+did nothing" was the correct reading of it.
+
+Two of those three runs were also lost to caching — the page answered from cache
+after a change and reported the identical wrong number, which reads as a failed
+fix rather than a stale file. Artifact fetches now pass `{ cache: "no-store" }`,
+and the page prints a fingerprint of the shader it actually ran, comparable
+against `npm run fingerprint`. A number the reader can check ends that class of
+round trip.
+
+### What is left
+
+The kernel recomputes the scores for every block of `d`, which is wasteful and
+correct: each workgroup owns one `(m, d)` block of the output and needs the full
+softmax over `n` to produce it. Removing the recomputation is flash attention's
+online rescaling, and it is a scheduling question rather than a missing
+capability.
+
+### The original G4 statement, for the record
 
 Composing two contractions where the second **consumes the first's fragment**.
 `plan.lanes` decides which invocation owns which output element, and a handoff

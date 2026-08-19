@@ -514,6 +514,12 @@ export function fusedSoftmaxF32(a, b, { M, N, K }) {
  */
 export function attentionF32(q, k, v, { M, N, D }) {
   const out = new Float32Array(M * D);
+  // SUM|p·v| per output element — the error scale for the O accumulation, the
+  // same quantity docs/002 §2 uses for the matmul. A ULP count is the wrong
+  // criterion for this kernel: O is a convex combination of zero-mean data, so
+  // many outputs land near zero where relative error is meaningless and a
+  // one-part-in-a-million absolute difference reads as a hundred thousand ULP.
+  const scale = new Float32Array(M * D);
   const row = new Float32Array(N);
   const fr = Math.fround;
   let maxArg = 0;
@@ -534,10 +540,14 @@ export function attentionF32(q, k, v, { M, N, D }) {
     }
     for (let n = 0; n < N; n++) row[n] = fr(row[n] / sum);
     for (let d = 0; d < D; d++) {
-      let acc = 0;
-      for (let n = 0; n < N; n++) acc = fr(acc + row[n] * v[n * D + d]);
+      let acc = 0, mag = 0;
+      for (let n = 0; n < N; n++) {
+        acc = fr(acc + row[n] * v[n * D + d]);
+        mag += Math.abs(row[n] * v[n * D + d]);
+      }
       out[m * D + d] = acc;
+      scale[m * D + d] = mag;
     }
   }
-  return { y: out, maxArg };
+  return { y: out, maxArg, scale };
 }
