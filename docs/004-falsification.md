@@ -832,7 +832,7 @@ sizes, which still catches the typo it was for without assuming a position.
 ### The redistribution, measured before implementing it
 
 `mma` now takes a computed fragment as its first operand, and the parser reads it,
-so `spike/attention/attention.kernel.ts` type-checks and parses end to end. The
+so `examples/attention.kernel.ts` type-checks and parses end to end. The
 emitter refuses one thing, by name:
 
 ```

@@ -11,7 +11,7 @@
 // axis in two roles across TWO contractions, which is legal and unimplemented.
 // That case cannot even reach this check, because a body reducing over two axes
 // is refused earlier. Conflating the two made an ill-defined kernel look like a
-// milestone. See spike/attention/ for the real one.
+// milestone. See examples/attention.kernel.ts for the real one.
 import {
   axis, tiling, kernel, input, output, f32, zeros, mma, relu,
 } from "../../src/tessera";
