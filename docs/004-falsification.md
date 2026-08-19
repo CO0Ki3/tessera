@@ -575,7 +575,7 @@ three vocabulary and one structural:
 
 | | | |
 |---|---|---|
-| G1 | `mma` wants `[bk, bn]`; attention needs `Kᵀ`, and `k.tile(n, d)` is `[bn, bk]` | vocabulary |
+| G1 | `mma` wants `[bk, bn]`; attention needs `Kᵀ`, and `k.tile(n, d)` is `[bn, bk]` | vocabulary — **closed** |
 | G2 | `rowMax(s, mx)` where `s` is a computed `Frag`, not a loaded `Tile` | vocabulary |
 | G3 | `subRow` / `divRow` / `mma` over a computed fragment | vocabulary |
 | G4 | `at.d` does not exist | **structural** |
@@ -647,3 +647,50 @@ ill-defined kernel up as a milestone, which would have made the next step look
 closer than it is — the check that "already handles attention's shape" handles
 nothing of the kind. **Composing two contractions in one body is untouched work**,
 and it is what G4 actually needs.
+
+### G1 closed: `.tileT()`
+
+A transposed read, said rather than inferred — the surface refusing
+`k.tile(d, n)` is it working as designed, so the kernel has to name what it
+wants and naming it wrong stays an error.
+
+**The access layer needed nothing.** `emitLoad` already took both indices from
+its caller instead of deriving them, so a transposed read is the same load with
+the indices passed the other way. `logical(bd)` swaps the axes for everything
+that reasons about the tile's shape; `emitLoad` is the one place that swaps back,
+because it is the one place that indexes the buffer.
+
+Verified twice, and the two are different kinds of evidence:
+
+*Structurally.* The generated WGSL for `A·Bᵀ` differs from plain matmul by
+exactly one line —
+
+```
+-  let off1 = t_gr * 768u + t_gc;     b  is [512, 768]  ->  b[gr][gc]
++  let off1 = t_gc * 512u + t_gr;     bT is [768, 512]  ->  bT[gc][gr]
+```
+
+— and `bT[gc][gr] == b[gr][gc]` *is* the statement that `bT` is `b` transposed.
+Everything else is byte-identical, so those values feed identical arithmetic.
+That argument covers every input rather than one, and it is a test rather than a
+paragraph. Writing the test caught the entry point's continuation line differing
+in **alignment** only, because parameters are padded to the opening paren and the
+two kernel names are different lengths; whitespace is collapsed before comparing.
+
+*Numerically.* The harness runs both on the same logical matrices with `B` stored
+two ways:
+
+```
+A·Bᵀ vs A·B    bit-exact 786432 / 786432   IDENTICAL
+```
+
+The structural argument was strong and had never been executed. Given how often
+this project has had a confident inference turned over by running it, that was
+worth closing.
+
+**Cost: not measurably worse, which is weaker than free.** `A·Bᵀ` measured 6q
+against `direct`'s 6q — but a transposed read changes which lanes touch which
+addresses, so whether staging `b` as `[N, K]` coalesces as well is a fair
+question, and one quantum of noise on a six-quantum kernel cannot resolve a 15%
+difference. Answering it properly needs batching, the way `rowwise.html` does it.
+Recorded as open rather than claimed.

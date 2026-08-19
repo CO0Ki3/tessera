@@ -326,6 +326,16 @@ async function main() {
         `the timed path differs, so this would be allocation or binding.`);
     write("");
   }
+  if (q("bt") && q("direct")) {
+    // A transposed read changes which lanes touch which addresses, so it is a
+    // fair question whether staging b as [N,K] coalesces as well. At this
+    // resolution the answer is "not measurably worse", which is weaker than
+    // "free": one quantum of noise on a six-quantum kernel cannot resolve a 15%
+    // difference. Batching would, the way rowwise.html does it.
+    write(`A\u00b7B\u1d40 vs A\u00b7B           ${cmp("bt", "direct").text}   ` +
+          `<span class="dim">(${q("direct")}q \u2192 ${q("bt")}q; transposed staging read)</span>`);
+    write("");
+  }
   if (q("mlirNoOpt") && q("mlir")) {
     const d = q("mlirNoOpt") - q("mlir");
     write(`canonicalize+cse+licm bought   ${cmp("mlirNoOpt", "mlir").text}   ` +
