@@ -21,7 +21,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -317,6 +317,47 @@ try {
   }
 } catch (e) {
   bad(`nested-softmax:\n${e.stdout?.toString() ?? e.message}`);
+}
+
+// ---- what the MLIR backend admits -----------------------------------------
+// It emits one schedule and is kept as a second oracle for that shape. Until a
+// capability gate existed the eight kernels outside it did not fail -- five
+// crashed with a bare TypeError and three came out as a MATMUL: fused-softmax
+// emitted no exp at all, matmul-bt ignored the transpose and read b[k][n] out of
+// a buffer holding b[n][k]. Emitting something other than what was written is the
+// failure the admission rule exists to prevent, and a backend is not exempt.
+//
+// So every kernel must get an ANSWER -- built, or refused by name. A TypeError is
+// neither.
+console.log("\nMLIR backend coverage");
+{
+  const kernels = readdirSync("examples").filter((f) => f.endsWith(".kernel.ts"));
+  const built = [], refused = [], crashed = [];
+  for (const f of kernels) {
+    try {
+      execFileSync("npx", ["tsx", "src/cli.ts", "build", join("examples", f),
+                           "-o", out, "--backend=mlir"], { stdio: "pipe" });
+      built.push(f);
+    } catch (e) {
+      const msg = (e.stdout?.toString() ?? "") + (e.stderr?.toString() ?? "");
+      if (/The MLIR backend emits one schedule/.test(msg)) refused.push(f);
+      else crashed.push(`${f}: ${(msg.match(/tessera: .*/) ?? ["(no message)"])[0].slice(0, 80)}`);
+    }
+  }
+  if (crashed.length) {
+    bad(`the MLIR backend neither built nor refused ${crashed.length}:\n    ` +
+        crashed.join("\n    "));
+  } else {
+    ok(`every kernel gets an answer: ${built.length} built, ${refused.length} refused by name`);
+  }
+  // And the two it builds are the canonical matmul family. If that list grows,
+  // something got through the gate that the backend cannot actually express.
+  const want = ["matmul.kernel.ts", "matmul-ragged.kernel.ts"].sort().join(" ");
+  if (built.sort().join(" ") !== want) {
+    bad(`the MLIR backend builds [${built.join(", ")}]; it expresses [${want}]`);
+  } else {
+    ok(`it builds exactly the matmul family it is kept for`);
+  }
 }
 
 // ---- two reduction axes in one kernel -------------------------------------

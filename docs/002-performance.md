@@ -245,6 +245,37 @@ and it is 1.57×.
 - It cost a week-0 spike to establish that the path works at all, and that
   knowledge does not expire.
 
+### What it actually covers, and what that cost to find out
+
+**Two kernels of ten** — `matmul` and `matmul-ragged`. It emits one schedule: two
+parallel axes, one reduction, two staged operands, a register fragment, one
+store. That was every kernel the day it was written.
+
+Until a capability gate existed, the other eight did not fail. Five crashed with a
+bare `TypeError` — `const [gm, gn] = k.grid` on a one-axis kernel — and **three
+came out as a matmul**:
+
+```
+fused-softmax   MLIR: 0 math.exp, 0 arith.maximumf, 0 arith.divf
+                WGSL: 16 exp, 20 max, 18 divides
+                the softmax was dropped and the toolchain reported success
+
+matmul-bt       MLIR differs from plain matmul by the name and one stride
+                constant; the index order is unchanged, so it reads b[k][n] out
+                of a buffer holding b[n][k]
+```
+
+Emitting something that is not what was written is the failure the admission rule
+exists to prevent, and a backend is not exempt from it. Every kernel now gets an
+answer — built, or refused by name — and `npm test` asserts both that nothing
+crashes and that the built list is exactly the matmul family, so the gate cannot
+quietly widen.
+
+The second-oracle argument survives this intact: two independent backends agreeing
+bit-for-bit on the canonical kernel is still worth having. What does not survive
+is the impression that the MLIR path tracks the project. It does not, and the
+number is two.
+
 ### What this does not settle
 
 The suspected mechanism — naga reconstructing `loop{}/continuing{}` with 144 phi

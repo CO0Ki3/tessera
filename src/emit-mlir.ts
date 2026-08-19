@@ -42,6 +42,56 @@ export interface EmitOptions {
 }
 
 export function emitMLIR(k: KernelIR, opts: EmitOptions = {}): string {
+  // ---- what this backend can actually express --------------------------------
+  //
+  // It emits ONE schedule: two parallel axes, one reduction, two read operands
+  // staged into workgroup memory, a register fragment, optionally relu, one store.
+  // That was every kernel when it was written. It is two of ten now, and until
+  // this gate existed the other eight did not fail — they came out as a matmul.
+  //
+  // Measured, not assumed. fused-softmax emitted zero `math.exp`, zero
+  // `arith.maximumf` and zero `arith.divf` against sixteen exps in the WGSL: the
+  // softmax was dropped entirely and the toolchain reported success. matmul-bt's
+  // MLIR differed from plain matmul's by the name and one stride constant, index
+  // order unchanged — reading `b[k][n]` out of a buffer holding `b[n][k]`.
+  //
+  // Emitting something that is not what was written is the failure this project's
+  // admission rule exists to prevent, and the rule applies to a backend too. This
+  // runs before anything destructures the IR, because that is what it protects:
+  // `const [gm, gn] = k.grid` crashes on a one-axis kernel, and a TypeError with
+  // no context is worse than a refusal.
+  {
+    const say = (why: string): never => {
+      throw new Error(
+        `${k.name}: ${why}. The MLIR backend emits one schedule — two parallel ` +
+        `axes, one reduction, two staged operands, a register fragment — and is ` +
+        `kept as a second oracle for that shape (docs/002 §5). Build with the ` +
+        `default (direct) backend.`);
+    };
+    if (k.multiPad) say("the body names more than one identity element");
+    if (k.schedule !== "matmul") say(`the body is a ${k.schedule} schedule`);
+    if (k.grid.length !== 2) say(`the body has ${k.grid.length} parallel axes, not 2`);
+    if (k.reduce.length !== 1) say(`the body reduces over ${k.reduce.length} axes, not 1`);
+    const reads = k.bindings.filter((x) => x.mode === "read");
+    if (reads.length !== 2) say(`the body reads ${reads.length} bindings, not 2`);
+    const tp = k.bindings.filter((x) => x.transposed).map((x) => x.name);
+    if (tp.length) say(`"${tp[0]}" is read transposed, which this backend ignores`);
+    for (const st of k.body?.steps ?? []) {
+      if (st.k === "derived" || st.k === "derivedFrag") say(`"${st.name}" is a derived value`);
+      if (st.k === "reduce" || st.k === "store") {
+        if (st.inner.length) say(`the pass over "${st.axis}" contains a nested contraction`);
+        if (st.locals.length) say(`the pass over "${st.axis}" declares a local accumulator`);
+      }
+      if (st.k === "reduce") {
+        for (const up of st.updates) {
+          if (up.k !== "mma") say(`the reduction uses ${up.k}, and this backend emits mma only`);
+        }
+      }
+    }
+    const accs = k.body?.accs ?? [];
+    if (accs.length !== 1) say(`the body has ${accs.length} accumulators, not 1`);
+  }
+
   const { bm, bn, bk } = k.tile;
   const [wgx, wgy] = k.workgroup;
   const [tm, tn] = k.fragment;
@@ -74,14 +124,6 @@ export function emitMLIR(k: KernelIR, opts: EmitOptions = {}): string {
   // ---- constants -----------------------------------------------------------
   const ragged = (a: AxisIR) => a.fit === "ragged";
   /** The masked-load fill. Not the accumulator's zero — see the constants below. */
-  // This backend carries ONE identity for the whole kernel. The direct backend
-  // reads it per binding, which is what attention needs; rather than emit the
-  // wrong one here, say so.
-  if (k.multiPad) {
-    throw new Error(
-      `${k.name}: the body names more than one identity element, which the MLIR ` +
-      `backend cannot express. Build with the default (direct) backend.`);
-  }
   const PAD = k.pad === "zero" ? "%f0 " : "%fpad ";
   const anyRagged = [...k.grid, ...k.reduce].some(ragged);
 
