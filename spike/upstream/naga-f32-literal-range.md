@@ -133,8 +133,9 @@ spec reads:
 1. **`wgsl-out` should not emit a literal outside the target type's range.** The
    input value was exactly representable, an exact spelling exists, and the
    output is refused by another implementation.
-2. **Whether the front-end should accept such a literal** depends on §15.7.6
-   Floating Point Conversion, and I could not get a definitive reading of it. If
+2. **Whether the front-end should accept such a literal** depends on
+   [§15.7.6 Floating Point Conversion](https://www.w3.org/TR/WGSL/#floating-point-conversion), and I
+   could not get a definitive reading of it. If
    rounding an out-of-range `AbstractFloat` is specified, naga is right here and
    Tint is wrong; if the value must be in range before rounding, the fix is to
    compare against `f32::MAX` before converting. Either way (1) stands, and (2)
@@ -157,8 +158,9 @@ midpoint between `f32::MAX` and `2^128`:
 So the check exists and works for values that round to infinity; this is where
 the boundary is.
 
-*Every literal position accepts it*, including the `f`-suffixed one that §3.5.2
-names directly — and the suffixed form is what `wgsl-out` writes:
+*Every literal position accepts it*, including the `f`-suffixed one that
+[§3.5.2 Numeric Literals](https://www.w3.org/TR/WGSL/#numeric-literals) names directly — and the
+suffixed form is what `wgsl-out` writes:
 
 ```
 o[0] = 3.4028235e38;              accepted
@@ -169,8 +171,9 @@ o[0] = 3.4028235e38f;             accepted
 vec3f(3.4028235e38).x             accepted
 ```
 
-> §3.5.2 — A shader-creation error results if: A decimal floating point literal
-> with an `f` or `h` suffix overflows the target type.
+> [§3.5.2](https://www.w3.org/TR/WGSL/#numeric-literals) — A shader-creation error results if: A
+> decimal floating point literal with an `f` or `h` suffix overflows the target
+> type.
 
 *f16 is unaffected, which locates the defect.* `f16::MAX` is 65504, exactly
 representable as a decimal, so `wgsl-out` writes `65504h` and nothing goes wrong.
@@ -180,7 +183,7 @@ denotes. naga's f16 front-end uses the same permissive rule (`65519h` accepted,
 has to serialize a value in the band.
 
 *Why the CTS has not caught it.*
-`src/webgpu/shader/validation/parse/literal.spec.ts` tests overflow with
+[`literal.spec.ts`](https://github.com/gpuweb/cts/blob/main/src/webgpu/shader/validation/parse/literal.spec.ts) tests overflow with
 `1.0e+999999999999f` and `0x1.0p+999999999999f` — values that round to infinity,
 which both implementations already reject. Nothing exercises the region between
 `f32::MAX` and the midpoint.
