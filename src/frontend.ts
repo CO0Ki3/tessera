@@ -325,14 +325,19 @@ function deriveAxisRoles(
     fail(node, `this build supports exactly 1 reduction axis, and the body reduces ` +
                `over ${contracted.length} (${contracted.join(", ") || "none"})`);
   }
-  // An axis that is BOTH is what attention needs — the head dimension is
-  // contracted in S = Q·Kᵀ and free in O = P·V. The surface can now say it; the
-  // emitter cannot yet schedule it, so refuse plainly rather than emit something
-  // that is not what was written. See spike/attention/.
+  // Reduced and stored along, WITHIN ONE CONTRACTION: `c[m,n] = sum_n …` sums
+  // over the axis it also indexes the output by. That is not unimplemented, it is
+  // undefined, and it stays an error however far the emitter gets.
+  //
+  // NOT to be confused with attention, where the head dimension is contracted in
+  // `S = Q·Kᵀ` and free in `O = P·V`. That is the same axis in two roles across
+  // TWO contractions, which is legal and unimplemented — and it cannot reach this
+  // check anyway, because a body with two reduction axes is refused above.
   const both = parallel.filter((n) => contracted.includes(n));
   if (both.length) {
-    fail(node, `axis "${both[0]}" is both reduced and stored along. That is legal to ` +
-               `write and is what attention needs, but this build cannot schedule it yet.`);
+    fail(node, `axis "${both[0]}" is reduced and also stored along, in the same ` +
+               `contraction: the sum runs over the axis that indexes the output. ` +
+               `Reduce along a different axis, or store along one.`);
   }
   return {
     grid: parallel.map((n) => byName.get(n)!),

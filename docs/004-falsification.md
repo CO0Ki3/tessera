@@ -624,11 +624,26 @@ existed before, both with negatives:
 
 ```
 unusedaxis   an axis in spec.axes the body never mentions
-bothroles    an axis both reduced and stored along — attention's shape,
-             sayable now, still not schedulable
+bothroles    an axis reduced and stored along within one contraction
 ```
 
-The second is deliberately an error rather than a guess. A compiler that quietly
-picks one of the two roles would be reinterpreting the program, which is the
-failure the admission rule exists to prevent. Making it schedulable is where this
-goes next.
+### A correction, made immediately after
+
+`bothroles` was first written up as "attention's shape, sayable now and not yet
+schedulable". That was wrong, and conflated two different things:
+
+| | |
+|---|---|
+| **reduced and stored along in ONE contraction** | `c[m,n] = sum_n …` sums over the axis that indexes the output. Not unimplemented — **undefined**, and an error however far the emitter gets |
+| **one axis in two roles across TWO contractions** | attention: the head dimension is contracted in `S = Q·Kᵀ` and free in `O = P·V`. Legal, unimplemented |
+
+`bothroles.kernel.ts` has one contraction, so it is the first. It cannot be the
+second, and neither can anything else yet: a body reducing over two axes is
+refused earlier by "this build supports exactly 1 reduction axis", so attention's
+case never reaches that check at all.
+
+The mistake is worth recording because of its direction. It dressed an
+ill-defined kernel up as a milestone, which would have made the next step look
+closer than it is — the check that "already handles attention's shape" handles
+nothing of the kind. **Composing two contractions in one body is untouched work**,
+and it is what G4 actually needs.

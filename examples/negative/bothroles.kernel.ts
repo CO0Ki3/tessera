@@ -1,14 +1,17 @@
-// An axis that is both reduced and stored along — attention's shape.
+// An axis reduced and stored along within one contraction.
 //
-// `S = Q·Kᵀ` contracts the head dimension while `O = P·V` leaves it free, so the
-// same axis sits on both sides of the split. The surface can now SAY this, which
-// is the point of deriving roles from the body rather than declaring them. The
-// emitter cannot schedule it yet.
+//   c[m,n] = sum_n a[m,n] * b[n,n]
 //
-// So this must fail with a message that names the situation, not with a crash
-// and not by silently picking one role. A compiler that quietly reinterprets the
-// program is the failure this project's admission rule exists to prevent.
-// See spike/attention/.
+// The sum runs over the axis that indexes the output. This is not a feature that
+// is missing — it is undefined, and it stays an error however far the emitter
+// gets.
+//
+// It is NOT attention, which an earlier version of this file claimed. Attention
+// has the head dimension contracted in `S = Q·Kᵀ` and free in `O = P·V`: the same
+// axis in two roles across TWO contractions, which is legal and unimplemented.
+// That case cannot even reach this check, because a body reducing over two axes
+// is refused earlier. Conflating the two made an ill-defined kernel look like a
+// milestone. See spike/attention/ for the real one.
 import {
   axis, tiling, kernel, input, output, f32, zeros, mma, relu,
 } from "../../src/tessera";

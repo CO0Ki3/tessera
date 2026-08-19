@@ -91,8 +91,8 @@ const NEGATIVES = [
   // that could not exist when spec.grid and spec.reduce declared them.
   ["unusedaxis.kernel.ts", "declared but the body never uses it",
    "an axis in spec.axes that the body never mentions"],
-  ["bothroles.kernel.ts",  "both reduced and stored along",
-   "attention's shape — sayable now, not schedulable yet"],
+  ["bothroles.kernel.ts",  "reduced and also stored along",
+   "a sum running over the axis that indexes the output"],
   // Ragged. All three are caught by GATE 1 — the surface types reject them
   // before the front end runs, with the diagnostics the design specified.
   ["nopad.kernel.ts",   "this block is ragged", "ragged load with no identity named"],
