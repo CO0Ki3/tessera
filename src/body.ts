@@ -30,7 +30,7 @@ import type { PadName } from "./ir.ts";
 export type Expr =
   /** `<binding>.tile(i, j)`, optionally `.pad(identity)`. */
   | { readonly k: "tile"; readonly binding: string; readonly pad?: PadName;
-      readonly coords: readonly Coord[] }
+      readonly coords: readonly Coord[]; readonly transposed: boolean }
   | { readonly k: "unary"; readonly op: "sq" | "exp"; readonly a: Expr }
   /** A block combined with a row value, broadcast along the block's columns. */
   | { readonly k: "rowOp"; readonly op: "sub" | "mul" | "div"; readonly a: Expr; readonly row: RowExpr };
@@ -171,15 +171,21 @@ export function parseExpr(
         `The identity for a masked max is negative infinity, which TypeScript cannot ` +
         `express as a literal type.`);
     }
-    return { k: "tile", binding: inner.binding, coords: inner.coords, pad: id as PadName };
+    return {
+      k: "tile", binding: inner.binding, coords: inner.coords,
+      transposed: inner.transposed, pad: id as PadName,
+    };
   }
 
-  if (fn === "tile") {
+  if (fn === "tile" || fn === "tileT") {
     const recv = (n.expression as ts.PropertyAccessExpression).expression;
     if (!ts.isIdentifier(recv) || !bindings.has(recv.text)) {
-      bad(n, `.tile() must be called on a binding declared in spec.bindings`);
+      bad(n, `.${fn}() must be called on a binding declared in spec.bindings`);
     }
-    return { k: "tile", binding: recv.text, coords: n.arguments.map((a) => readCoord(a)) };
+    return {
+      k: "tile", binding: recv.text, transposed: fn === "tileT",
+      coords: n.arguments.map((a) => readCoord(a)),
+    };
   }
 
   if (fn in BLOCK_UNARY) {

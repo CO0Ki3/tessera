@@ -34,9 +34,22 @@ export function emitWGSL(k: KernelIR): string {
   const out = k.bindings.find((b) => b.mode === "write")!;
   const reads = k.bindings.filter((b) => b.mode === "read");
 
+  /** The binding as MEMORY has it: `axes` in storage order. */
+  const memOf = (n: string) => k.bindings.find((x) => x.name === n)!;
+  /**
+   * The binding as the TILE has it. `.tileT()` swaps the two axes for every
+   * purpose except the address computation — staging dimensions, which axis the
+   * contraction runs along, which axis is ragged for the mask. `emitLoad` is the
+   * single place that swaps back, because it is the only one that indexes the
+   * buffer.
+   */
+  const logical = (b: BindingIR): BindingIR =>
+    b.transposed ? { ...b, axes: [b.axes[1], b.axes[0]] as const } : b;
+  const byName = (n: string) => logical(memOf(n));
+
   const plan = planContraction(
     accumulate, contract,
-    reads.map((b) => ({ binding: b.name, axes: b.axes })),
+    reads.map((b) => ({ binding: b.name, axes: logical(b).axes })),
     k.workgroup,
     out.axes[1],                      // the output's last index is contiguous
   );
@@ -47,7 +60,6 @@ export function emitWGSL(k: KernelIR): string {
   const PAD = PAD_LITERAL[k.pad];
   const ragged = (a: AxisIR) => a.fit === "ragged";
   const axisOf = new Map([...k.grid, ...k.reduce].map((x) => [x.name, x]));
-  const byName = (n: string) => k.bindings.find((x) => x.name === n)!;
   /**
    * The workgroup buffer staging an operand. Prefixed rather than suffixed: the
    * obvious `${binding}s` turns a binding named `a` into `as`, which is a WGSL
@@ -79,9 +91,15 @@ export function emitWGSL(k: KernelIR): string {
   };
   let offN = 0;
   const emitLoad = (lhs: string, bd: BindingIR, i0: string, i1: string, ind: number) => {
+    // `bd` arrives in TILE order; the buffer is in memory order. For a `.tileT()`
+    // read those differ by exactly a swap of the two indices, which is why the
+    // access layer needed nothing else — it already took both indices from its
+    // caller rather than deriving them.
+    const mem = memOf(bd.name);
+    const [m0, m1] = mem.transposed ? [i1, i0] : [i0, i1];
     const off = `off${offN++}`;
-    P(`let ${off} = ${i0} * ${u(stride(bd))} + ${i1};`, ind);
-    const g = guards(bd, i0, i1);
+    P(`let ${off} = ${m0} * ${u(stride(mem))} + ${m1};`, ind);
+    const g = guards(mem, m0, m1);
     P(g.length === 0
       ? `${lhs} = ${bd.name}[${off}];`
       // Clamp then select: branchless. A branch would diverge for exactly one

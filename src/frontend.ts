@@ -21,7 +21,9 @@ import {
   derive, type AxisIR, type BindingIR, type DTypeName, type KernelIR, type PadName, type Schedule,
 } from "./ir.ts";
 
-import { parseBody, BodyError, type Body, type RowBody } from "./body.ts";
+import {
+  parseBody, BodyError, type Body, type RowBody, type Expr,
+} from "./body.ts";
 
 const PAD_NAMES = ["zero", "one", "negInf", "posInf"] as const;
 
@@ -272,6 +274,39 @@ function checkCanonicalBody(
 // ---------------------------------------------------------------------------
 
 /**
+ * Which bindings the body reads through `.tileT()`.
+ *
+ * The bindings are built from the spec before the body is parsed, so this runs
+ * afterwards and fills the flag in. A binding read BOTH ways in one body would
+ * need two staging layouts for one buffer, which the emitter does not do, so it
+ * is refused rather than silently given one of them.
+ */
+function collectTransposed(parsed: RowBody, node: ts.Node): Set<string> {
+  const t = new Set<string>(), plain = new Set<string>();
+  const walk = (e: Expr): void => {
+    if (e.k === "tile") { (e.transposed ? t : plain).add(e.binding); return; }
+    if (e.k === "unary") return walk(e.a);
+    if (e.k === "rowOp") return walk(e.a);
+  };
+  for (const st of parsed.steps) {
+    if (st.k === "store") walk(st.value);
+    if (st.k === "reduce") {
+      for (const u of st.updates) {
+        if (u.k === "fold") walk(u.value);
+        if (u.k === "mma") { walk(u.a); walk(u.b); }
+      }
+    }
+  }
+  for (const n of t) {
+    if (plain.has(n)) {
+      fail(node, `binding "${n}" is read both as .tile() and as .tileT(). One buffer ` +
+                 `cannot be staged in two layouts, so pick one.`);
+    }
+  }
+  return t;
+}
+
+/**
  * Which axes are parallel and which are contracted, read from the body.
  *
  * These used to be declared, as `spec.grid` and `spec.reduce`. Declaring them
@@ -478,6 +513,13 @@ export function compileToIR(entryFile: string): KernelIR {
 
   const { padded, schedule, rowBody } = checkCanonicalBody(call, bindings, raggedNames);
   const { grid, reduce } = deriveAxisRoles(rowBody, axes, specNode);
+
+  // `.tileT()` is a property of how the BODY reads a binding, so it is filled in
+  // after parsing rather than read from the spec.
+  const transposed = collectTransposed(rowBody, specNode);
+  for (let i = 0; i < bindings.length; i++) {
+    if (transposed.has(bindings[i].name)) bindings[i] = { ...bindings[i], transposed: true };
+  }
 
   // Tile coherence, when a tile is declared. This used to be a tsc error via the
   // kernel() signature, which cost a seven-diagnostic cascade for one mistake and

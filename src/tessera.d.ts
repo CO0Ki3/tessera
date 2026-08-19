@@ -224,6 +224,22 @@ export interface InputHandle<A0 extends AnyAxis, A1 extends AnyAxis, D extends D
   /** Stage one block into workgroup memory. Barriers and the bank-conflict
    *  swizzle are compiler-owned; there is no barrier primitive in this language. */
   tile(i: IdxOf<A0>, j: IdxOf<A1>): TileOf<A0, A1, D>;
+  /**
+   * The same block, with the two axes swapped: the tile is `[A1, A0]` while the
+   * memory stays `[A0, A1]`.
+   *
+   * This exists because a transposed axis is a TYPE ERROR here, deliberately, so
+   * a kernel that genuinely wants one has to say so rather than be quietly
+   * accommodated. `mma` contracts its second operand's FIRST axis, and the
+   * common storage order for that operand is the other way round — `B` stored
+   * `[N, K]`, which is also exactly the shape of attention's `S = Q·Kᵀ`.
+   *
+   * Nothing about the access layer changes: `emitLoad` already takes its two
+   * indices from the caller, so a transposed read is the same load with the
+   * indices passed the other way. What the surface adds is the ability to say it,
+   * and the type to keep saying it wrong an error.
+   */
+  tileT(i: IdxOf<A1>, j: IdxOf<A0>): TileOf<A1, A0, D>;
 }
 
 export interface OutputSlot<S extends readonly [number, number], D extends DType> {

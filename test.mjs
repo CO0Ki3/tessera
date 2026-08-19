@@ -260,6 +260,56 @@ console.log("\nharness artifacts");
   }
 }
 
+// ---- transposed reads -----------------------------------------------------
+// `.tileT()` should cost exactly one line of generated code: the address
+// computation, with its two indices swapped. Asserting that is stronger than a
+// numerical spot check, because "everything else is byte-identical" plus "this
+// line reads the transposed element" covers every input rather than one.
+//
+//   plain   off = gr * 768 + gc   ->  b[gr][gc]     b  is [512, 768]
+//   tileT   off = gc * 512 + gr   ->  bT[gc][gr]    bT is [768, 512]
+//
+// and bT[gc][gr] == b[gr][gc] is exactly the statement that bT is b transposed.
+console.log("\ntransposed reads");
+try {
+  const H = "spike/wgsl-baseline";
+  execFileSync("npx", ["tsx", "src/cli.ts", "build", "examples/matmul-bt.kernel.ts",
+                       "-o", out], { stdio: "pipe" });
+  execFileSync("npx", ["tsx", "src/cli.ts", "build", "examples/matmul.kernel.ts",
+                       "-o", out], { stdio: "pipe" });
+  const plain = readFileSync(join(out, "matmul_relu_f32.wgsl"), "utf8").split("\n");
+  const bt = readFileSync(join(out, "matmul_bt_f32.wgsl"), "utf8").split("\n");
+
+  if (plain.length !== bt.length) {
+    bad(`tileT changed the line count (${plain.length} vs ${bt.length}); it should change one line`);
+  } else {
+    const diff = plain.map((l, i) => [l, bt[i], i])
+      .filter(([a, b]) => a !== b)
+      // The kernel's own name appears in the header comment and the entry point.
+      // Its continuation line differs too, in ALIGNMENT only: the parameters are
+      // padded to the opening paren, and the two names are different lengths.
+      // That is not a code difference, so whitespace is collapsed before compare.
+      .filter(([a, b]) => !a.includes("matmul_relu_f32")
+                       && a.replace(/\s+/g, " ") !== b.replace(/\s+/g, " "));
+    if (diff.length !== 1) {
+      bad(`tileT changed ${diff.length} lines beyond the name; expected exactly 1:\n` +
+          diff.map(([a, b]) => `    - ${a.trim()}\n    + ${b.trim()}`).join("\n"));
+    } else {
+      const [was, now] = diff[0];
+      const m0 = was.match(/=\s*(\w+) \* (\d+)u \+ (\w+);/);
+      const m1 = now.match(/=\s*(\w+) \* (\d+)u \+ (\w+);/);
+      if (!m0 || !m1) bad(`the changed line is not an address computation:\n    ${was}\n    ${now}`);
+      else if (m1[1] !== m0[3] || m1[3] !== m0[1]) {
+        bad(`tileT did not swap the indices: ${m0[1]},${m0[3]} -> ${m1[1]},${m1[3]}`);
+      } else {
+        ok(`tileT costs one line: ${m0[1]}*${m0[2]}+${m0[3]} becomes ${m1[1]}*${m1[2]}+${m1[3]}`);
+      }
+    }
+  }
+} catch (e) {
+  bad(`transposed build:\n${e.stdout?.toString() ?? e.message}`);
+}
+
 // ---- 3. the TypeGPU adapter's derivation ----------------------------------
 // The adapter builds its bind group layout from the manifest and its pipeline
 // from the WGSL, and WebGPU validates against the layout — so a disagreement

@@ -88,6 +88,16 @@ export interface BindingIR {
   readonly mode: "read" | "write";
   /** extent0 * extent1 — the flat element count of the storage buffer. */
   readonly elements: number;
+  /**
+   * The body reads this binding through `.tileT()`, so the tile it wants is
+   * `[axes[1], axes[0]]` while the MEMORY stays `[axes[0], axes[1]]`.
+   *
+   * Everything that reasons about the tile's shape sees the swapped order; the
+   * one place that touches memory swaps back. Set from the body — the surface
+   * says which of `.tile` / `.tileT` was written, and a transposed axis stays a
+   * type error unless it is said.
+   */
+  readonly transposed?: boolean;
 }
 
 export interface KernelIR {
