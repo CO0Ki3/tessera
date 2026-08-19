@@ -14,7 +14,10 @@ import {
   zeros, mma, rowFill, rowMax, rowSum, subRow, divRow, expTile, negInf, zero,
 } from "../../src/tessera";
 
-const T = tiling(f32, 64, 64, 16);
+// 32x32x16, not this project's usual 64x64x16. Attention has to stage the score
+// fragment as well as q, k and v, and a bm x bn fragment at 64x64 is 16384 B on
+// its own — the entire guaranteed floor. See docs/004 R12.
+const T = tiling(f32, 32, 32, 16);
 
 const M = axis("m", 1024, T.bm);   // queries
 const N = axis("n",  768, T.bn);   // keys and values

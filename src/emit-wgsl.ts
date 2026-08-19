@@ -80,6 +80,7 @@ export function emitWGSL(k: KernelIR): string {
       for (const upd of step.updates) {
         if (upd.k === "fold") walk(upd.value);
         if (upd.k === "mma") { walk(upd.a); walk(upd.b); }
+        if (upd.k === "mmaFrag") walk(upd.b);   // `a` is a fragment, not a binding
       }
     }
     return [...out2];
@@ -305,17 +306,61 @@ export function emitWGSL(k: KernelIR): string {
     };
     for (const st of body.steps) collect(st, []);
     for (const [b, n] of decls) P(`var<workgroup> ${stageName(b)} : array<${ty}, ${n}>;`);
+
+    // A fragment that a later contraction sums along an axis it holds on a lane
+    // has to pass through workgroup memory. Its size comes from the geometry that
+    // BUILT it, so it is computed here rather than discovered while emitting —
+    // a workgroup buffer has to be declared before anything writes to it.
+    for (const st of body.steps) {
+      if (st.k !== "reduce" || !st.inner.length) continue;
+      if (!st.updates.some((up) => up.k === "mmaFrag")) continue;
+      const inner = st.inner[0];
+      const inG = geomOf(
+        planWith(axisIR(inner.axis), [axisIR(st.axis)],
+                 new Set(st.inner.flatMap((x) => readsOf(x)))),
+        axisIR(inner.axis), T_(`cb_${inner.axis}`));
+      const [r2, c2] = inG.slices;
+      const n = laneW[r2.lane] * r2.slice * laneW[c2.lane] * c2.slice;
+      wgFloats += n;
+      P(`var<workgroup> ${T_("pstage")} : array<${ty}, ${n}>;   // a redistributed fragment`);
+    }
     wgFloats += [...decls.values()].reduce((n2, x) => n2 + x, 0);
   }
-  const reducesFrag = body.steps.some((x) => x.k === "derived" && x.expr.k === "reduceFrag");
+  // A cross-lane fold needs scratch, and there are two ways to ask for one: a
+  // derived row value (`const mx = rowMax(s, …)`) and an outer pass folding the
+  // fragment its inner contraction built (`mx = rowMax(s, mx)` after a nested
+  // loop). Only the first was counted, so attention's folds referred to a buffer
+  // nothing had declared.
+  const reducesFrag = body.steps.some((x) =>
+    (x.k === "derived" && x.expr.k === "reduceFrag")
+    || (x.k === "reduce" && x.inner.length > 0 && x.updates.some((up) => up.k === "foldFrag")));
   if (reducesFrag) {
-    // rows-in-the-tile x lanes-along-the-reduced-axis. Staged operands keep their
-    // own buffers; this is additional, and the two together must still fit the
-    // 16384 B floor.
-    const [row, red] = slices;
-    wgFloats += laneW[row.lane] * row.slice * laneW[red.lane];
-    P(`var<workgroup> scratch : array<${ty}, ${laneW[row.lane] * row.slice * laneW[red.lane]}>;` +
-      `   // tile rows x lanes along ${red.axis}`);
+    // rows-in-the-tile x lanes-along-the-reduced-axis, sized by the geometry that
+    // laid the fragment out. For a derived `rowMax(s, …)` that is the kernel's own;
+    // for a fold after a nested contraction it is the INNER pass's, which is a
+    // different shape — and reading the outer one there asks a one-axis accumulate
+    // for its second slice.
+    const layouts: (readonly { axis: string; lane: "x" | "y"; slice: number }[])[] = [];
+    if (body.steps.some((x) => x.k === "derived" && x.expr.k === "reduceFrag")) {
+      layouts.push(slices);
+    }
+    for (const st of body.steps) {
+      if (st.k !== "reduce" || !st.inner.length) continue;
+      if (!st.updates.some((up) => up.k === "foldFrag")) continue;
+      const inner = st.inner[0];
+      layouts.push(geomOf(
+        planWith(axisIR(inner.axis), [axisIR(st.axis)],
+                 new Set(st.inner.flatMap((x) => readsOf(x)))),
+        axisIR(inner.axis), T_(`cb_${inner.axis}`)).slices);
+    }
+    const n = Math.max(...layouts.map((ls) => {
+      const [row, red] = ls;
+      if (!red) throw new Error(
+        `${k.name}: a cross-lane fold needs two accumulate axes, and "${row.axis}" is alone`);
+      return laneW[row.lane] * row.slice * laneW[red.lane];
+    }));
+    wgFloats += n;
+    P(`var<workgroup> scratch : array<${ty}, ${n}>;   // tile rows x lanes along the folded axis`);
   } else if (!staged.length && plan.lanes.needsCombine) {
     wgFloats += plan.workgroupElements;
     P(`var<workgroup> scratch : array<${ty}, ${plan.workgroupElements}>;   // fragment x lanes`);
@@ -624,21 +669,56 @@ export function emitWGSL(k: KernelIR): string {
 
     for (const up of step.updates) {
       if (up.k === "mmaFrag") {
-        // THE REDISTRIBUTION — all that is left of G4.
+        // THE REDISTRIBUTION.
         //
         // The inner contraction laid `P` out with the axis this one sums along
-        // spread across the lanes: four of the sixty-four `n` values per
-        // invocation. Summing it in place gives a quarter of each row.
+        // spread across the lanes — two of this block's thirty-two n values per
+        // invocation — and this contraction sums along n. Read in place, each
+        // invocation would sum a sixteenth of its row.
         //
-        // The mechanism is to stage `P` through workgroup memory, exactly as an
-        // operand read from a buffer is staged, with registers as the source. The
-        // budget is what makes it more than plumbing: q, k, v and the staged
-        // fragment are alive at once, which is 28672 B at a 64x64x16 tile against
-        // a 16384 B floor. 32x32x16 fits, at 10240 B.
-        throw new Error(
-          `${k.name}: contracting a fragment along an axis it holds on a lane. ` +
-          `Staging it through workgroup memory is not implemented — and at this ` +
-          `tile it would not fit either. See docs/004 R12, G4.`);
+        // So `P` goes through workgroup memory, exactly as an operand read from a
+        // buffer does, with registers as the source rather than global memory.
+        // After that the block is an ordinary matmul: P[bm, bn] x V[bn, bd], with
+        // every invocation reading every n.
+        if (up.b.k !== "tile") {
+          throw new Error(`${k.name}: a fragment contraction's second operand is a tile`);
+        }
+        const vbd = byName(up.b.binding);
+        const bnBlock = laneW[red.lane] * red.slice;    // the axis being summed
+        const [orow, ocol] = g.slices;                  // the accumulator's layout
+        const ocolLane = ocol.lane === "x" ? "tx" : "ty";
+        const dims = vbd.axes.map((a2) => axisOf.get(a2)!.block);
+        const stageP = T_("pstage");
+
+        for (const c of inG.cells) {
+          P(`${stageP}[(${rowLane} * ${u(row.slice)} + ${u(c[row.axis])}) * ${u(bnBlock)} + ` +
+            `(${redLane} * ${u(red.slice)} + ${u(c[red.axis])})] = ` +
+            `${innerFrag(up.a, c, inG)};`, 2);
+        }
+        P(`for (var ${T_("i")} : u32 = tid; ${T_("i")} < ${u(dims[0] * dims[1])}; ` +
+          `${T_("i")} = ${T_("i")} + ${u(wgx * wgy)}) {`, 2);
+        P(`let ${T_("r")} = ${T_("i")} / ${u(dims[1])};`, 3);
+        P(`let ${T_("cc")} = ${T_("i")} % ${u(dims[1])};`, 3);
+        const co = (axis: string, local: string) =>
+          axis === step.axis ? `${g.loopVar} + ${local}` : `base_${axis} + ${local}`;
+        P(`let ${T_("gr")} = ${co(vbd.axes[0], T_("r"))};`, 3);
+        P(`let ${T_("gc")} = ${co(vbd.axes[1], T_("cc"))};`, 3);
+        emitLoad(`${stageName(vbd.name)}[${T_("i")}]`, vbd, T_("gr"), T_("gc"), 3);
+        P(`}`, 2);
+        P(`workgroupBarrier();`, 2);
+
+        P(`for (var ${T_("ci")} : u32 = 0u; ${T_("ci")} < ${u(bnBlock)}; ` +
+          `${T_("ci")} = ${T_("ci")} + 1u) {`, 2);
+        for (const c of g.cells) {
+          const mi = `${rowLane} * ${u(orow.slice)} + ${u(c[orow.axis])}`;
+          const di = `${ocolLane} * ${u(ocol.slice)} + ${u(c[ocol.axis])}`;
+          const cell = `${up.acc}[${g.cellIndex(c)}]`;
+          P(`${cell} = ${cell} + ${stageP}[(${mi}) * ${u(bnBlock)} + ${T_("ci")}] * ` +
+            `${stageName(vbd.name)}[${T_("ci")} * ${u(dims[1])} + (${di})];`, 3);
+        }
+        P(`}`, 2);
+        P(`workgroupBarrier();`, 2);
+        continue;
       }
       if (up.k !== "foldFrag") {
         throw new Error(`${k.name}: a pass with a nested contraction folds its fragment`);
