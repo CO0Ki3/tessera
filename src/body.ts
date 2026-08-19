@@ -29,7 +29,8 @@ import type { PadName } from "./ir.ts";
 /** A block-valued expression. */
 export type Expr =
   /** `<binding>.tile(i, j)`, optionally `.pad(identity)`. */
-  | { readonly k: "tile"; readonly binding: string; readonly pad?: PadName }
+  | { readonly k: "tile"; readonly binding: string; readonly pad?: PadName;
+      readonly coords: readonly Coord[] }
   | { readonly k: "unary"; readonly op: "sq" | "exp"; readonly a: Expr }
   /** A block combined with a row value, broadcast along the block's columns. */
   | { readonly k: "rowOp"; readonly op: "sub" | "mul" | "div"; readonly a: Expr; readonly row: RowExpr };
@@ -55,9 +56,10 @@ export type FragExpr =
   | { readonly k: "map"; readonly op: "relu"; readonly a: FragExpr };
 
 export type Pass =
-  | { readonly k: "reduce"; readonly updates: readonly Update[] }
+  | { readonly k: "reduce"; readonly axis: string; readonly updates: readonly Update[] }
   /** A store inside a pass, one operand cell at a time. */
-  | { readonly k: "store"; readonly binding: string; readonly value: Expr };
+  | { readonly k: "store"; readonly axis: string; readonly binding: string;
+      readonly coords: readonly Coord[]; readonly value: Expr };
 
 /**
  * A step in the body, in SOURCE ORDER.
@@ -68,10 +70,25 @@ export type Pass =
  * emitter then referenced `mu` before anything declared it. WGSL caught it;
  * keeping the order is the fix.
  */
+/**
+ * One argument of `.tile(...)`.
+ *
+ * These used to be discarded. With `spec.grid` and `spec.reduce` declared, the
+ * coordinate system was implied by the schedule and the IR never had to know
+ * which axis went where — transposition was caught by the type checker alone,
+ * and nothing downstream could see it. Deriving the axis roles from the body
+ * means reading them: `at.m` is a free coordinate, a loop variable is a
+ * contracted one, and the difference is the whole question.
+ */
+export type Coord =
+  | { readonly kind: "at"; readonly axis: string }
+  | { readonly kind: "loop"; readonly name: string };
+
 export type Step =
   | { readonly k: "derived"; readonly name: string; readonly expr: RowExpr }
   /** A store OUTSIDE any pass, of a whole fragment. matmul ends this way. */
-  | { readonly k: "storeFrag"; readonly binding: string; readonly value: FragExpr }
+  | { readonly k: "storeFrag"; readonly binding: string;
+      readonly coords: readonly Coord[]; readonly value: FragExpr }
   | Pass;
 
 export interface Acc {
@@ -103,6 +120,17 @@ const ROW_COMBINE: Record<string, "sub" | "mul" | "div"> = {
 };
 const REDUCERS: Record<string, "max" | "sum"> = { rowMax: "max", rowSum: "sum" };
 const FRAG_MAP: Record<string, "relu"> = { relu: "relu" };
+
+/** `at.<axis>` or a loop variable. Anything else is not a coordinate. */
+export function readCoord(n: ts.Expression): Coord {
+  if (ts.isPropertyAccessExpression(n) && ts.isIdentifier(n.expression)
+      && n.expression.text === "at") {
+    return { kind: "at", axis: n.name.text };
+  }
+  if (ts.isIdentifier(n)) return { kind: "loop", name: n.text };
+  throw new BodyError(
+    `a tile coordinate is \`at.<axis>\` or a loop variable, got \`${n.getText()}\``, n);
+}
 
 export class BodyError extends Error {
   constructor(message: string, readonly node: ts.Node) { super(message); }
@@ -143,7 +171,7 @@ export function parseExpr(
         `The identity for a masked max is negative infinity, which TypeScript cannot ` +
         `express as a literal type.`);
     }
-    return { k: "tile", binding: inner.binding, pad: id as PadName };
+    return { k: "tile", binding: inner.binding, coords: inner.coords, pad: id as PadName };
   }
 
   if (fn === "tile") {
@@ -151,7 +179,7 @@ export function parseExpr(
     if (!ts.isIdentifier(recv) || !bindings.has(recv.text)) {
       bad(n, `.tile() must be called on a binding declared in spec.bindings`);
     }
-    return { k: "tile", binding: recv.text };
+    return { k: "tile", binding: recv.text, coords: n.arguments.map((a) => readCoord(a)) };
   }
 
   if (fn in BLOCK_UNARY) {
@@ -233,10 +261,10 @@ export function parseBody(
   const steps: Step[] = [];
   const rowNames = new Set<string>();
 
-  const readUpdatesAndStore = (block: ts.Statement): Pass => {
+  const readUpdatesAndStore = (block: ts.Statement, axis: string): Pass => {
     if (!ts.isBlock(block)) bad(block, `a pass body must be a block`);
     const updates: Update[] = [];
-    let store: { binding: string; value: Expr } | undefined;
+    let store: { binding: string; coords: readonly Coord[]; value: Expr } | undefined;
 
     for (const st of block.statements) {
       if (ts.isExpressionStatement(st) && ts.isBinaryExpression(st.expression)
@@ -286,6 +314,7 @@ export function parseBody(
         if (store) bad(st, `more than one store in a pass`);
         store = {
           binding: recv.text,
+          coords: slot.arguments.map((a) => readCoord(a)),
           value: parseExpr(st.expression.arguments[0], rowNames, bindings, padNames),
         };
         continue;
@@ -295,9 +324,9 @@ export function parseBody(
     }
 
     if (store && updates.length) bad(block, `a pass either reduces or stores, not both`);
-    if (store) return { k: "store", ...store };
+    if (store) return { k: "store", axis, ...store };
     if (!updates.length) bad(block, `this pass does nothing`);
-    return { k: "reduce", updates };
+    return { k: "reduce", axis, updates };
   };
 
   for (const st of body.statements) {
@@ -325,7 +354,20 @@ export function parseBody(
       continue;
     }
 
-    if (ts.isForOfStatement(st)) { steps.push(readUpdatesAndStore(st.statement)); continue; }
+    if (ts.isForOfStatement(st)) {
+      // Which axis this pass reduces over used to be discarded: there was exactly
+      // one reduce axis for the whole kernel, so `for (const n of reduce.n)` had
+      // nothing to distinguish. It is read now because the axis roles come from
+      // the body rather than from a declaration — an axis may be contracted in
+      // one pass and free in another, which is what attention needs.
+      const it = st.expression;
+      if (!ts.isPropertyAccessExpression(it) || !ts.isIdentifier(it.expression)
+          || it.expression.text !== "reduce") {
+        bad(st, `a pass iterates \`reduce.<axis>\`, got \`${it.getText()}\``);
+      }
+      steps.push(readUpdatesAndStore(st.statement, it.name.text));
+      continue;
+    }
 
     // `c.tile(...).store(relu(acc))` outside any loop: a whole-fragment store.
     if (ts.isExpressionStatement(st) && ts.isCallExpression(st.expression)
@@ -340,6 +382,7 @@ export function parseBody(
       }
       steps.push({
         k: "storeFrag", binding: recv.text,
+        coords: slot.arguments.map((a) => readCoord(a)),
         value: parseFrag(st.expression.arguments[0], rowNames),
       });
       continue;

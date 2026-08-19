@@ -361,15 +361,30 @@ export declare function cast<
 
 /* ----------------------------------------------------------------- kernel */
 
+/**
+ * `at` and `reduce` are both open over EVERY declared axis, and the body decides
+ * which role an axis plays by how it uses it: `at.m` is a free coordinate,
+ * `for (const n of reduce.n)` contracts.
+ *
+ * This used to be two disjoint lists, `Grid` and `Reduce`, partitioned once per
+ * kernel. That is a matmul-shaped assumption in the same family as the one
+ * `spec.tile` already shed. Attention breaks it: `S = Q·Kᵀ` contracts the head
+ * dimension while `O = P·V` leaves it free, and the key axis is the mirror
+ * image — the same axis on both sides of the split, in one kernel.
+ *
+ * `planContraction` was already parameterised per contraction and assumed
+ * nothing global, so the partition only ever lived in the surface. Removing it
+ * makes the type simpler as well as more general: one list instead of two, and
+ * a coherence check the compiler pass reports in one place.
+ */
 export type Ctx<
-  Grid extends readonly AnyAxis[],
-  Reduce extends readonly AnyAxis[],
+  Axes extends readonly AnyAxis[],
   Bs extends BindingList,
 > =
   & { readonly [B in NonNullable<Bs[number]> as B["name"]]: HandleOf<B> }
   & {
-      readonly at: { readonly [A in Grid[number] as A["name"]]: IdxOf<A> };
-      readonly reduce: { readonly [A in Reduce[number] as A["name"]]: Iterable<IdxOf<A>> };
+      readonly at: { readonly [A in Axes[number] as A["name"]]: IdxOf<A> };
+      readonly reduce: { readonly [A in Axes[number] as A["name"]]: Iterable<IdxOf<A>> };
     };
 
 export interface CompileReport {
@@ -405,8 +420,7 @@ export interface Kernel<Bs extends BindingList, Req extends FeatureName> {
 }
 
 export declare function kernel<
-  const Grid extends readonly [AnyAxis, ...AnyAxis[]],
-  const Reduce extends readonly AnyAxis[],
+  const Axes extends readonly [AnyAxis, ...AnyAxis[]],
   const Bs extends BindingList,
   T extends Tiling<DType, number, number, number> = Tiling<DType, number, number, number>,
 >(
@@ -415,10 +429,10 @@ export declare function kernel<
     /**
      * Optional, and no longer positionally bound to the axes.
      *
-     * An `Axis` already carries its own block size, so tying grid[0] to `T["bm"]`
+     * An `Axis` already carries its own block size, so tying axes[0] to `T["bm"]`
      * in the type was a matmul-shaped assumption: it forced every kernel to have
      * exactly two parallel axes and one reduction axis blocked at `bk`. softmax
-     * is `grid: [m], reduce: [n]`, and could not be written at all.
+     * reduces along the axis it also stores along, and could not be written at all.
      *
      * `tiling()` still earns its place as the thing that produces legal block
      * triples with good autocomplete. What moved is the coherence check —
@@ -427,8 +441,16 @@ export declare function kernel<
      * cascade. docs/001 §7 listed suppressing that cascade as outstanding work.
      */
     readonly tile?: T;
-    readonly grid: Grid;
-    readonly reduce: Reduce;
+    /**
+     * Every axis the kernel names. NOT partitioned into parallel and reduced —
+     * that is read from the body, because an axis can be both (see `Ctx`).
+     *
+     * The dispatch grid is the output binding's axes; the reduction axes are the
+     * ones the body loops over. Both were already visible to the compiler, so
+     * declaring them was asking for something it could see — the same rule that
+     * says a host must read `manifest.dispatch` rather than recompute it.
+     */
+    readonly axes: Axes;
     readonly bindings: Bs;
     /** Optional. Default: the largest legal shape whose invocation count
      *  divides BM*BN. Delete it and the program means exactly the same thing. */
@@ -436,7 +458,7 @@ export declare function kernel<
     /** Optional. Default "row". "grouped" is Triton's L2 swizzle as a policy. */
     readonly order?: "row" | "column" | { readonly grouped: number };
   },
-  body: (ctx: Ctx<Grid, Reduce, Bs>) => void,
+  body: (ctx: Ctx<Axes, Bs>) => void,
 ): Kernel<Bs, T["dtype"] extends f16 ? "shader-f16" : never>;
 
 /* ------------------------------------------------------------------- host */
