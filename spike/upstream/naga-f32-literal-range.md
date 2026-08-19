@@ -98,12 +98,18 @@ Running the boundary through `createShaderModule` on both browsers:
 
 | literal | Firefox 153 (naga) | Chrome 151 (Tint) |
 |---|---|---|
-| `3.4028234663852886e38` — exactly `f32::MAX` | accepted | accepted |
-| `340282350000000000000000000000000000000f` — **what `wgsl-out` writes** | **accepted** | **rejected** |
-| `3.4028235e38` — the same value | **accepted** | **rejected** |
+| `0x1.fffffep+127` — **the input given to naga** | accepted | accepted |
+| `3.4028234663852886e38` — the same value, exact decimal | accepted | accepted |
+| `340282350000000000000000000000000000000f` — **what `wgsl-out` produced from it** | **accepted** | **rejected** |
+| `3.4028235e38` — the same value, exponent form | **accepted** | **rejected** |
 | `3.402823567e38` | **accepted** | **rejected** |
 | `3.4028235677973366e38` — the midpoint | rejected | rejected |
 | `1e39` | rejected | rejected |
+
+Rows 1–2 are what naga was given, in two spellings; row 3 is what naga wrote.
+**Both browsers accept the input. Only Firefox accepts the output.** The value is
+unchanged and both spellings of it are portable, so what breaks the shader is the
+rewrite.
 
 Tint:
 
