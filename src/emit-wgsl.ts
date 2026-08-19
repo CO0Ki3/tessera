@@ -91,7 +91,30 @@ export function emitWGSL(k: KernelIR): string {
     for (const b of readsOf(st)) set.add(b);
     readsByAxis.set(st.axis, set);
   }
-  const planFor = new Map(k.reduce.map((ax) => {
+  /**
+   * The plan for a pass, given the axes whose loops enclose it.
+   *
+   * An inner contraction accumulates over the grid PLUS those axes: they are
+   * fixed while it runs, so they are free to it. `for n { for k { … } }` gives the
+   * inner pass accumulate (m, n) — a matmul's shape — where the outer one has (m).
+   */
+  const planWith = (ax: AxisIR, enclosing: readonly AxisIR[], names: ReadonlySet<string>) =>
+    planContraction(
+      [...accumulate, ...enclosing], ax,
+      reads.filter((b) => names.has(b.name)).map((b) => ({ binding: b.name, axes: logical(b).axes })),
+      k.workgroup,
+      out.axes[1],
+    );
+
+  // Only the axes reduced at the TOP level get a plan from the kernel's accumulate
+  // set. A nested axis is never contracted against that set — its pass sees the
+  // enclosing loops as accumulate axes too — so building one for it would ask for
+  // the coordinate of an axis nothing there walks. That was the first wall the
+  // nested probe hit: `operand "b" mentions unknown axis "n"`.
+  const topAxes = new Set(body.steps
+    .filter((st) => st.k === "reduce" || st.k === "store")
+    .map((st) => (st as Extract<Step, { k: "reduce" }>).axis));
+  const planFor = new Map(k.reduce.filter((ax) => topAxes.has(ax.name)).map((ax) => {
     const names = readsByAxis.get(ax.name) ?? new Set(reads.map((b) => b.name));
     return [ax.name, planContraction(
       accumulate, ax,
@@ -181,35 +204,55 @@ export function emitWGSL(k: KernelIR): string {
     P(`if (${g.join(" && ")}) {`, ind); P(w, ind + 1); P(`}`, ind);
   };
 
-  // ---- geometry from the plan ------------------------------------------------
-  const slices = plan.lanes.perAxis;                       // accumulate axis -> lane, slice
-  const sliceOf = new Map(slices.map((s) => [s.axis, s]));
-  const frag = plan.lanes.fragment;
-  const contractLaneW = plan.lanes.contractLanes.reduce((n, l) => n * laneW[l], 1);
-  const contractBlock = contract.block;
-  const seqDepth = contractBlock / contractLaneW;
-  const staged = plan.operands.filter((o) => o.staged);
+  // ---- geometry from a plan --------------------------------------------------
+  /**
+   * Everything the emitter derives from one contraction's plan.
+   *
+   * This used to be a block of module-level constants, which was right while a
+   * kernel had exactly one contraction. A nested one has its own: an inner
+   * contraction accumulates over the grid PLUS every axis whose loop encloses it,
+   * because those are fixed while it runs. In `for n { for k { … } }` the inner
+   * pass accumulates (m, n) and the outer one (m), so their fragments are
+   * different shapes — 4x4 against 4 — and everything below follows from that.
+   */
+  function geomOf(gplan: ContractionPlan, cax: AxisIR, loopVar: string) {
+    const slices = gplan.lanes.perAxis;                    // accumulate axis -> lane, slice
+    const sliceOf = new Map(slices.map((s) => [s.axis, s]));
+    const frag = gplan.lanes.fragment;
+    const contractLaneW = gplan.lanes.contractLanes.reduce((n, l) => n * laneW[l], 1);
+    const seqDepth = cax.block / contractLaneW;
 
-  /** Every fragment cell, as an assignment of a slice index to each accumulate axis. */
-  const cells: Record<string, number>[] = [{}];
-  for (const s of slices) {
-    const next: Record<string, number>[] = [];
-    for (const c of cells) for (let i = 0; i < s.slice; i++) next.push({ ...c, [s.axis]: i });
-    cells.length = 0; cells.push(...next);
+    /** Every fragment cell, as an assignment of a slice index to each accumulate axis. */
+    const cells: Record<string, number>[] = [{}];
+    for (const sl of slices) {
+      const next: Record<string, number>[] = [];
+      for (const c of cells) for (let i = 0; i < sl.slice; i++) next.push({ ...c, [sl.axis]: i });
+      cells.length = 0; cells.push(...next);
+    }
+    const cellIndex = (c: Record<string, number>) =>
+      slices.reduce((n, sl) => n * sl.slice + c[sl.axis], 0);
+    /** The value name an operand contributes at this cell — projected onto its own axes. */
+    const operandVal = (bindingName: string, c: Record<string, number>) => {
+      const bd = byName(bindingName);
+      const own = bd.axes.filter((a) => sliceOf.has(a)).map((a) => c[a]);
+      return `v_${bindingName}${own.map((i) => `_${i}`).join("")}`;
+    };
+    /** Global coordinate of an accumulate axis at slice index i. */
+    const accCoord = (axis: string, i: number) => {
+      const sl = sliceOf.get(axis)!;
+      return `base_${axis} + ${sl.lane === "x" ? "tx" : "ty"} * ${u(sl.slice)} + ${u(i)}`;
+    };
+    return {
+      plan: gplan, cax, loopVar, slices, sliceOf, frag, contractLaneW, seqDepth,
+      contractBlock: cax.block, staged: gplan.operands.filter((o) => o.staged),
+      cells, cellIndex, operandVal, accCoord,
+    };
   }
-  const cellIndex = (c: Record<string, number>) =>
-    slices.reduce((n, s) => n * s.slice + c[s.axis], 0);
-  /** The value name an operand contributes at this cell — projected onto its own axes. */
-  const operandVal = (bindingName: string, c: Record<string, number>) => {
-    const bd = byName(bindingName);
-    const own = bd.axes.filter((a) => sliceOf.has(a)).map((a) => c[a]);
-    return `v_${bindingName}${own.map((i) => `_${i}`).join("")}`;
-  };
-  /** Global coordinate of an accumulate axis at slice index i. */
-  const accCoord = (axis: string, i: number) => {
-    const s = sliceOf.get(axis)!;
-    return `base_${axis} + ${s.lane === "x" ? "tx" : "ty"} * ${u(s.slice)} + ${u(i)}`;
-  };
+  type Geom = ReturnType<typeof geomOf>;
+
+  const G = geomOf(plan, contract, T_("cb"));
+  const { slices, sliceOf, frag, contractLaneW, contractBlock, seqDepth, staged,
+          cells, cellIndex, operandVal, accCoord } = G;
 
   // ---- header ---------------------------------------------------------------
   P(`// Generated by tessera from a TypeScript kernel. Do not edit.`);
@@ -228,7 +271,25 @@ export function emitWGSL(k: KernelIR): string {
     P(`@group(0) @binding(${i}) var<storage, ${bd.mode === "read" ? "read" : "read_write"}> ${bd.name} : array<${ty}>;`);
   }
   P();
-  for (const o of staged) P(`var<workgroup> ${stageName(o.binding)} : array<${ty}, ${o.stagedElements}>;`);
+  // Every pass's staged operands, nested ones included. The outer pass of a
+  // nested kernel may stage nothing at all while the inner one stages both its
+  // operands, which is how `stage_a` came to be read without being declared.
+  {
+    const decls = new Map<string, number>();
+    const collect = (st: Step, enclosing: readonly AxisIR[]): void => {
+      if (st.k !== "reduce" && st.k !== "store") return;
+      const names = new Set(readsOf(st));
+      for (const inner of st.inner) for (const b of readsOf(inner)) names.add(b);
+      const pl = enclosing.length ? planWith(axisIR(st.axis), enclosing, names)
+                                  : planFor.get(st.axis)!;
+      for (const o of pl.operands) {
+        if (o.staged) decls.set(o.binding, Math.max(decls.get(o.binding) ?? 0, o.stagedElements));
+      }
+      for (const inner of st.inner) collect(inner, [...enclosing, axisIR(st.axis)]);
+    };
+    for (const st of body.steps) collect(st, []);
+    for (const [b, n] of decls) P(`var<workgroup> ${stageName(b)} : array<${ty}, ${n}>;`);
+  }
   const reducesFrag = body.steps.some((x) => x.k === "derived" && x.expr.k === "reduceFrag");
   if (reducesFrag) {
     // rows-in-the-tile x lanes-along-the-reduced-axis. Staged operands keep their
@@ -266,17 +327,60 @@ export function emitWGSL(k: KernelIR): string {
 
   // ---- the contraction --------------------------------------------------------
   const reduceSteps = body.steps.filter((s) => s.k === "reduce");
-  for (const step of reduceSteps) emitContractionPass(step.axis, step.updates);
+  for (const step of reduceSteps) emitPass(step, []);
+  // A store pass that ran an inner contraction is emitted here; a flat one is
+  // handled by the store loop below, which is where it has always been.
+  for (const step of body.steps) {
+    if (step.k === "store" && (step.locals.length || step.inner.length)) emitPass(step, []);
+  }
 
-  function emitContractionPass(axisName: string, updates: readonly Update[]): void {
-    const cx = axisIR(axisName);
-    const cplan = planFor.get(axisName)!;
-    const staged = cplan.operands.filter((o) => o.staged);
+  /**
+   * One pass: its local accumulators, the passes nested inside it, and its own
+   * contraction loop.
+   *
+   * `enclosing` is the axes whose loops are already open. They are fixed while
+   * this pass runs, so they are ACCUMULATE axes to it — which is the whole reason
+   * an inner contraction has a different fragment shape from the outer one, and
+   * why the plan cannot be built once per axis for the kernel.
+   */
+  function emitPass(step: Extract<Step, { k: "reduce" } | { k: "store" }>,
+                    enclosing: readonly AxisIR[]): void {
+    const cx = axisIR(step.axis);
+    const names = new Set(readsOf(step));
+    for (const inner of step.inner) for (const b of readsOf(inner)) names.add(b);
+    const cplan = enclosing.length ? planWith(cx, enclosing, names) : planFor.get(step.axis)!;
+    const g = geomOf(cplan, cx, enclosing.length ? T_(`cb_${step.axis}`) : T_("cb"));
+    const staged = g.staged;
     const cBlock = cx.block;
+    const updates = step.k === "reduce" ? step.updates : [];
+
+    // Locals and nested passes come FIRST, and outside this pass's own loop is
+    // wrong — the inner contraction has to run once per step of this one, since
+    // its fragment is the scores for this block and nothing else.
+    if (step.locals.length || step.inner.length) {
+      P(`for (var ${g.loopVar} : u32 = 0u; ${g.loopVar} < ${u(cx.extent)}; ` +
+        `${g.loopVar} = ${g.loopVar} + ${u(cBlock)}) {`, 1);
+      // The enclosing axis is fixed for the nested passes, so it is an accumulate
+      // axis to them and needs a base: this loop's own step.
+      P(`let base_${cx.name} = ${g.loopVar};`, 2);
+      const inGeom = geomOf(
+        planWith(axisIR(step.inner[0].axis), [...enclosing, cx],
+                 new Set(step.inner.flatMap((x) => readsOf(x)))),
+        axisIR(step.inner[0].axis), T_(`cb_${step.inner[0].axis}`));
+      for (const loc of step.locals) {
+        P(`var ${loc.name} : array<${ty}, ${inGeom.frag}>;`, 2);
+        for (let c = 0; c < inGeom.frag; c++) P(`${loc.name}[${c}] = ${PAD_LITERAL[loc.init]};`, 2);
+      }
+      for (const inner of step.inner) emitPass(inner, [...enclosing, cx]);
+      emitOuterUpdates(step, g, inGeom);
+      P(`}`, 1);
+      P();
+      return;
+    }
     // How many sequential steps this invocation walks for THIS axis. Derived
     // from the pass's own block and the lanes the contraction was split across.
-    const cDepth = cBlock / contractLaneW;
-    P(`for (var ${T_("cb")} : u32 = 0u; ${T_("cb")} < ${u(cx.extent)}; ${T_("cb")} = ${T_("cb")} + ${u(cBlock)}) {`, 1);
+    const cDepth = g.seqDepth;
+    P(`for (var ${g.loopVar} : u32 = 0u; ${g.loopVar} < ${u(cx.extent)}; ${g.loopVar} = ${g.loopVar} + ${u(cBlock)}) {`, 1);
 
     for (const o of staged) {
       const bd = byName(o.binding);
@@ -285,7 +389,7 @@ export function emitWGSL(k: KernelIR): string {
       P(`let ${T_("r")} = ${T_("i")} / ${u(dims[1])};`, 3);
       P(`let ${T_("cc")} = ${T_("i")} % ${u(dims[1])};`, 3);
       const coord = (axis: string, local: string) =>
-        axis === cx.name ? `${T_("cb")} + ${local}` : `base_${axis} + ${local}`;
+        axis === cx.name ? `${g.loopVar} + ${local}` : `base_${axis} + ${local}`;
       P(`let ${T_("gr")} = ${coord(bd.axes[0], T_("r"))};`, 3);
       P(`let ${T_("gc")} = ${coord(bd.axes[1], T_("cc"))};`, 3);
       emitLoad(`${stageName(o.binding)}[${T_("i")}]`, bd, T_("gr"), T_("gc"), 3);
@@ -300,8 +404,8 @@ export function emitWGSL(k: KernelIR): string {
     for (const o of staged) {
       const bd = byName(o.binding);
       const dims = bd.axes.map((a) => axisOf.get(a)!.block);
-      const accAxis = bd.axes.find((a) => sliceOf.has(a))!;
-      const sl = sliceOf.get(accAxis)!;
+      const accAxis = bd.axes.find((a) => g.sliceOf.has(a))!;
+      const sl = g.sliceOf.get(accAxis)!;
       const lane = sl.lane === "x" ? "tx" : "ty";
       for (let i = 0; i < sl.slice; i++) {
         const nm = T_(`base_${o.binding}_${i}`);
@@ -325,31 +429,31 @@ export function emitWGSL(k: KernelIR): string {
     P(cplan.lanes.needsCombine
       ? `let ${T_("lc")} = ${laneId} * ${u(cDepth)} + ${T_("s")};`
       : `let ${T_("lc")} = ${T_("s")};`, 3);
-    P(`let ${T_("ci")} = ${T_("cb")} + ${T_("lc")};`, 3);
+    P(`let ${T_("ci")} = ${g.loopVar} + ${T_("lc")};`, 3);
 
     // One read per operand per combination of the accumulate axes it mentions.
     for (const o of cplan.operands) {
       const bd = byName(o.binding);
-      const ownAxes = bd.axes.filter((a) => sliceOf.has(a));
+      const ownAxes = bd.axes.filter((a) => g.sliceOf.has(a));
       const combos: Record<string, number>[] = [{}];
       for (const a of ownAxes) {
         const n: Record<string, number>[] = [];
-        for (const c of combos) for (let i = 0; i < sliceOf.get(a)!.slice; i++) n.push({ ...c, [a]: i });
+        for (const c of combos) for (let i = 0; i < g.sliceOf.get(a)!.slice; i++) n.push({ ...c, [a]: i });
         combos.length = 0; combos.push(...n);
       }
       for (const c of combos) {
-        const name = operandVal(o.binding, c);
+        const name = g.operandVal(o.binding, c);
         if (o.staged) {
           const dims = bd.axes.map((a) => axisOf.get(a)!.block);
-          const accAxis = bd.axes.find((a) => sliceOf.has(a))!;
+          const accAxis = bd.axes.find((a) => g.sliceOf.has(a))!;
           const base = hoisted.get(`${o.binding}_${c[accAxis]}`)!;
           // base already carries the invariant term; the step contributes the rest.
           P(bd.axes[0] === accAxis
             ? `let ${name} = ${stageName(o.binding)}[${base} + ${T_("lc")}];`
             : `let ${name} = ${stageName(o.binding)}[${T_("lc")} * ${u(dims[1])} + ${base}];`, 4);
         } else {
-          const g0 = bd.axes[0] === cx.name ? T_("ci") : accCoord(bd.axes[0], c[bd.axes[0]]);
-          const g1 = bd.axes[1] === cx.name ? T_("ci") : accCoord(bd.axes[1], c[bd.axes[1]]);
+          const g0 = bd.axes[0] === cx.name ? T_("ci") : g.accCoord(bd.axes[0], c[bd.axes[0]]);
+          const g1 = bd.axes[1] === cx.name ? T_("ci") : g.accCoord(bd.axes[1], c[bd.axes[1]]);
           emitLoad(`let ${name}`, bd, `(${g0})`, `(${g1})`, 4);
         }
       }
@@ -357,12 +461,12 @@ export function emitWGSL(k: KernelIR): string {
     // Update every fragment cell. Each cell picks the operand value belonging to
     // its own slice indices, projected onto that operand's axes — which is what
     // makes an outer product and a fold the same code.
-    for (const c of cells) {
-      const i = cellIndex(c);
+    for (const c of g.cells) {
+      const i = g.cellIndex(c);
       for (const up of updates) {
         if (up.k === "mma") {
           P(`${up.acc}[${i}] = ${up.acc}[${i}] + ` +
-            `${blockExpr(up.a, c)} * ${blockExpr(up.b, c)};`, 4);
+            `${blockExpr(up.a, c, g)} * ${blockExpr(up.b, c, g)};`, 4);
         } else {
           // A tile fold reads one block per contraction step; a fragment fold
           // reads a value already whole in registers. Inside a contraction loop
@@ -372,7 +476,7 @@ export function emitWGSL(k: KernelIR): string {
             throw new Error(`${k.name}: a fragment fold inside a contraction loop; `
               + `the fragment is not complete until the loop ends.`);
           }
-          const v = blockExpr(up.value, c);
+          const v = blockExpr(up.value, c, g);
           P(up.op === "max"
             ? `${up.acc}[${i}] = max(${up.acc}[${i}], ${v});`
             : `${up.acc}[${i}] = ${up.acc}[${i}] + ${v};`, 4);
@@ -391,6 +495,110 @@ export function emitWGSL(k: KernelIR): string {
    * Combine the lane partials. Needed exactly when the contract axis was given a
    * lane dimension, which the plan decided and this does not second-guess.
    */
+  /**
+   * A fragment expression indexed by the INNER geometry.
+   *
+   * `fragExpr` closes over the outer cellIndex, which is the wrong one for a
+   * fragment the inner contraction laid out. Elementwise forms recurse; a row
+   * operation does not, because its row value is indexed by the outer geometry
+   * and mixing the two silently is exactly the class of bug this emitter keeps
+   * being rewritten to avoid.
+   */
+  function innerFrag(f: FragExpr, c: Record<string, number>, inG: Geom): string {
+    switch (f.k) {
+      case "acc":   return `${f.name}[${inG.cellIndex(c)}]`;
+      case "map":   return `select(0.0, ${innerFrag(f.a, c, inG)}, ${innerFrag(f.a, c, inG)} > 0.0)`;
+      case "unary": {
+        const a2 = innerFrag(f.a, c, inG);
+        return f.op === "exp" ? `exp(${a2})` : `(${a2} * ${a2})`;
+      }
+      case "rowOp": {
+        // The row value is indexed by the outer geometry and the fragment by the
+        // inner one, which sounds like it needs a redistribution and does not:
+        // `rowExpr` indexes a row by its ROW-axis cell, and emitOuterUpdates has
+        // already refused the case where that axis is laid out differently in the
+        // two. So the same cell record answers both.
+        const a2 = innerFrag(f.a, c, inG), r = rowExpr(f.row, c);
+        return f.op === "sub" ? `(${a2} - ${r})` : f.op === "mul" ? `(${a2} * ${r})` : `(${a2} / ${r})`;
+      }
+    }
+  }
+
+  /**
+   * What the outer pass does with the fragment its inner contraction built.
+   *
+   * The fragment is laid out by the INNER geometry — `(m, n)` on `(y, x)` — and
+   * the accumulator by the outer one, `(m)` on `(y)`. Folding along n therefore
+   * crosses the x lanes, the same shape as emitReduceFrag, and lands one value
+   * per outer cell. That the surviving axis keeps its lane and slice in both is
+   * what makes this a fold rather than a redistribution.
+   */
+  function emitOuterUpdates(step: Extract<Step, { k: "reduce" } | { k: "store" }>,
+                            g: Geom, inG: Geom): void {
+    const [row, red] = inG.slices;
+    if (step.k === "store") {
+      // Writing the inner fragment out. No cross-lane anything: the inner
+      // geometry already gives both coordinates — the row axis from the grid, the
+      // reduced axis from this loop's step plus the invocation's own lane — so
+      // each cell knows where it goes.
+      if (!step.fromFrag) {
+        throw new Error(
+          `${k.name}: a pass with a nested contraction stores something other than ` +
+          `its fragment`);
+      }
+      const bd = byName(step.binding);
+      for (const c of inG.cells) {
+        emitStore(bd, `(${inG.accCoord(row.axis, c[row.axis])})`,
+                  `(${inG.accCoord(red.axis, c[red.axis])})`,
+                  innerFrag(step.value as FragExpr, c, inG), 2);
+      }
+      P();
+      return;
+    }
+    if (row.axis !== g.slices[0].axis || row.lane !== g.slices[0].lane
+        || row.slice !== g.slices[0].slice) {
+      throw new Error(
+        `${k.name}: the inner contraction lays out "${row.axis}" as ` +
+        `${row.lane}(${row.slice}) where the outer one has ` +
+        `${g.slices[0].lane}(${g.slices[0].slice}). Redistributing a fragment ` +
+        `between layouts is not implemented.`);
+    }
+    const width = laneW[red.lane];
+    const redLane = red.lane === "x" ? "tx" : "ty";
+    const rowLane = row.lane === "x" ? "tx" : "ty";
+    const slot = (rc: number, lane: string) =>
+      `scratch[(${rowLane} * ${u(row.slice)} + ${u(rc)}) * ${u(width)} + ${lane}]`;
+
+    for (const up of step.updates) {
+      if (up.k !== "foldFrag") {
+        throw new Error(`${k.name}: a pass with a nested contraction folds its fragment`);
+      }
+      const init = up.op === "max" ? PAD_LITERAL.negInf : "0.0";
+      const fold = (acc: string, v: string) =>
+        up.op === "max" ? `${acc} = max(${acc}, ${v});` : `${acc} = ${acc} + ${v};`;
+      for (let rc = 0; rc < row.slice; rc++) {
+        P(`{`, 2);
+        P(`var ${T_("p")} = ${init};`, 3);
+        for (let nc = 0; nc < red.slice; nc++) {
+          P(fold(T_("p"), innerFrag(up.value, { [row.axis]: rc, [red.axis]: nc }, inG)), 3);
+        }
+        P(`${slot(rc, redLane)} = ${T_("p")};`, 3);
+        P(`}`, 2);
+      }
+      P(`workgroupBarrier();`, 2);
+      for (let rc = 0; rc < row.slice; rc++) {
+        P(`{`, 2);
+        P(`var ${T_("r")} = ${init};`, 3);
+        P(`for (var ${T_("j")} : u32 = 0u; ${T_("j")} < ${u(width)}; ${T_("j")} = ${T_("j")} + 1u) {`, 3);
+        P(fold(T_("r"), slot(rc, T_("j"))), 4);
+        P(`}`, 3);
+        P(fold(`${up.acc}[${rc}]`, T_("r")), 3);
+        P(`}`, 2);
+      }
+      P(`workgroupBarrier();`, 2);
+    }
+  }
+
   function emitCombine(updates: readonly Update[]): void {
     const accs = [...new Set(updates.map((x) => x.acc))];
     // The lane dimension the contraction was split across, and the other one.
@@ -474,14 +682,23 @@ export function emitWGSL(k: KernelIR): string {
   }
 
   /** A block-valued expression at one fragment cell. */
-  function blockExpr(e: Expr, c: Record<string, number>): string {
+  /**
+   * A block-valued expression at one fragment cell, named by a GEOMETRY.
+   *
+   * Which suffixes an operand's value carries depends on which of its axes are
+   * accumulated, and that differs between an inner contraction and the outer one:
+   * `b` over `[k, n]` is `v_b` where only `m` accumulates and `v_b_0..3` where
+   * `n` does too. Reading the name off the wrong geometry produced `v_b` used
+   * against `v_b_0` defined, which naga caught and tessera did not.
+   */
+  function blockExpr(e: Expr, c: Record<string, number>, gm: Geom = G): string {
     switch (e.k) {
-      case "tile":  return operandVal(e.binding, c);
+      case "tile":  return gm.operandVal(e.binding, c);
       case "unary": return e.op === "sq"
-        ? `(${blockExpr(e.a, c)} * ${blockExpr(e.a, c)})`
-        : `exp(${blockExpr(e.a, c)})`;
+        ? `(${blockExpr(e.a, c, gm)} * ${blockExpr(e.a, c, gm)})`
+        : `exp(${blockExpr(e.a, c, gm)})`;
       case "rowOp": {
-        const a = blockExpr(e.a, c), r = rowExpr(e.row, c);
+        const a = blockExpr(e.a, c, gm), r = rowExpr(e.row, c);
         return e.op === "sub" ? `(${a} - ${r})` : e.op === "mul" ? `(${a} * ${r})` : `(${a} / ${r})`;
       }
     }
@@ -542,7 +759,9 @@ export function emitWGSL(k: KernelIR): string {
   const sDepth = sx.block / contractLaneW;
   const storeWalksContraction = out.axes.includes(sx.name);
 
-  if (storeWalksContraction && storeStep.k === "store") {
+  const storeWasNested = storeStep.k === "store"
+    && (storeStep.locals.length > 0 || storeStep.inner.length > 0);
+  if (!storeWasNested && storeWalksContraction && storeStep.k === "store") {
     P(`for (var ${T_("cb")} : u32 = 0u; ${T_("cb")} < ${u(sx.extent)}; ${T_("cb")} = ${T_("cb")} + ${u(sx.block)}) {`, 1);
     // The part of a staged address that does not move with the contract step is
     // loop-invariant by construction — it is the invocation's own slice — so it is
@@ -597,6 +816,9 @@ export function emitWGSL(k: KernelIR): string {
       emitStore(out, `(${accCoord(out.axes[0], c[out.axes[0]])})`,
                 `(${accCoord(out.axes[1], c[out.axes[1]])})`, fragExpr(storeStep.value, c), 1);
     }
+  } else if (storeWasNested) {
+    // Already emitted above, inside its own pass — the fragment it writes only
+    // exists there.
   } else {
     throw new Error(`${k.name}: the store's form and the output's axes disagree`);
   }

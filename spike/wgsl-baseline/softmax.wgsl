@@ -3,7 +3,7 @@
 //   softmax_f32   accumulate (m)   contract n
 //   lanes m->y(4)  n->x   fragment 4   4 sequential steps
 //   staged: nothing — no operand is reused   workgroup 4096 B
-//   masked: x:n y:n   pad negInf (-3.4028234663852886e38)
+//   masked: x:n y:n   pad x=negInf
 
 @group(0) @binding(0) var<storage, read> x : array<f32>;
 @group(0) @binding(1) var<storage, read_write> y : array<f32>;

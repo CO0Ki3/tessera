@@ -265,6 +265,31 @@ console.log("\nharness artifacts");
   }
 }
 
+// ---- a contraction inside another's loop ----------------------------------
+// nested-softmax computes softmax(A.B) with N twelve blocks wide, so the score
+// fragment cannot be held whole and is recomputed per block -- one contraction
+// inside another's loop. The structural claim is that the two loops are distinct
+// and neither shadows the other, which an earlier version got wrong by naming
+// both `t_cb`.
+console.log("\nnested contraction");
+try {
+  execFileSync("npx", ["tsx", "src/cli.ts", "build", "examples/nested-softmax.kernel.ts",
+                       "-o", out], { stdio: "pipe" });
+  const wgsl = readFileSync(join(out, "nested_softmax_f32.wgsl"), "utf8");
+  const loops = [...wgsl.matchAll(/for \(var (t_cb\w*) : u32 = 0u; \1 < (\d+)u/g)]
+    .map((m) => `${m[1]}<${m[2]}`);
+  const names = new Set(loops.map((l) => l.split("<")[0]));
+  if (names.size !== 2) {
+    bad(`expected two distinct loop variables, got ${[...names].join(", ")} in [${loops.join(" ")}]`);
+  } else if (!loops.some((l) => l.endsWith("<768")) || !loops.some((l) => l.endsWith("<512"))) {
+    bad(`expected outer 768 and inner 512, got [${loops.join(" ")}]`);
+  } else {
+    ok(`${loops.length} loops, two names, outer 768 and inner 512 — no shadowing`);
+  }
+} catch (e) {
+  bad(`nested-softmax:\n${e.stdout?.toString() ?? e.message}`);
+}
+
 // ---- two reduction axes in one kernel -------------------------------------
 // One plan per reduction axis. The lane geometry is shared by construction, so
 // the plans differ only in what they stage and how far they walk -- and the

@@ -3,7 +3,7 @@
 //   layernorm_f32   accumulate (m)   contract n
 //   lanes m->y(4)  n->x   fragment 4   4 sequential steps
 //   staged: nothing — no operand is reused   workgroup 4096 B
-//   masked: x:n y:n   pad zero (0.0)
+//   masked: x:n y:n   pad x=zero
 
 @group(0) @binding(0) var<storage, read> x : array<f32>;
 @group(0) @binding(1) var<storage, read_write> y : array<f32>;

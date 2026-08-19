@@ -16,12 +16,20 @@
 // that its two contractions accumulate over DIFFERENT axis sets, (m,n) then (m,d),
 // so their lane assignments disagree and the fragment must be redistributed.
 //
-// This probe has one accumulate set throughout, so it isolates the nesting.
+// The accumulate sets are NOT the same throughout — the inner pass accumulates
+// (m, n) and the outer (m) — and the reason this still needs no redistribution is
+// narrower than that: the axis surviving into the outer pass, m, keeps the same
+// lane and slice in both. n lands on the x lane inside and is the contracted axis
+// outside, so folding along x is the cross-lane reduce that already existed.
+//
+// Attention breaks exactly that: S = Q·Kᵀ accumulates (m, n) and O = P·V
+// accumulates (m, d), so the surviving layouts disagree and the fragment has to
+// move. The emitter refuses that by name rather than emitting for the wrong one.
 
 import {
   axis, tiling, kernel, input, output, f32,
   zeros, mma, rowFill, rowMax, rowSum, subRow, divRow, expTile, negInf, zero,
-} from "../../src/tessera";
+} from "../src/tessera";
 
 const T = tiling(f32, 64, 64, 16);
 

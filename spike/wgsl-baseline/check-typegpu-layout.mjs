@@ -46,6 +46,7 @@ const CASES = [
   ["matmul-ragged-direct.json", "matmul-ragged-direct.wgsl"],
   ["matmul-bt.json", "matmul-bt.wgsl"],
   ["fused-softmax.json", "fused-softmax.wgsl"],
+  ["nested-softmax.json", "nested-softmax.wgsl"],
   ["softmax.json", "softmax.wgsl"],
   ["layernorm.json", "layernorm.wgsl"],
 ];

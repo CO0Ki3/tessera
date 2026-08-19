@@ -3,7 +3,7 @@
 //   matmul_relu_ragged   accumulate (m, n)   contract k
 //   lanes m->y(4) n->x(4)   fragment 16   16 sequential steps
 //   staged: a, b   workgroup 8192 B
-//   masked: a:m a:k b:k b:n c:m c:n   pad zero (0.0)
+//   masked: a:m a:k b:k b:n c:m c:n   pad a=zero b=zero
 
 @group(0) @binding(0) var<storage, read> a : array<f32>;
 @group(0) @binding(1) var<storage, read> b : array<f32>;

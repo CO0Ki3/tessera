@@ -43,9 +43,24 @@ async function main() {
   const ctx = await initDevice();
   write(`adapter   ${ctx.adapterInfo.vendor} / ${ctx.adapterInfo.architecture}`);
 
-  const man = await (await fetch("./fused-softmax.json")).json();
-  const src = await (await fetch("./fused-softmax.wgsl")).text();
+  // Two kernels, one oracle. They compute the same thing by different schedules:
+  // `fused` holds the whole score fragment because N is one block wide, `nested`
+  // recomputes it per block because N is twelve — which puts one contraction
+  // inside another's loop. Same reference, so a nesting bug surfaces as ULP.
+  for (const KK of [
+    { key: "fused",  man: "./fused-softmax.json",  wgsl: "./fused-softmax.wgsl",
+      label: "one block of n — the whole score fragment is held at once" },
+    { key: "nested", man: "./nested-softmax.json", wgsl: "./nested-softmax.wgsl",
+      label: "twelve blocks of n — a contraction nested inside the outer loop" },
+  ]) await one(ctx, KK);
+}
+
+async function one(ctx, KK) {
+  const man = await (await fetch(KK.man)).json();
+  const src = await (await fetch(KK.wgsl)).text();
   const M = man.axes.m, N = man.axes.n, K = man.axes.k, dims = { M, N, K };
+  write(`\n── ${KK.key} ${"─".repeat(Math.max(0, 46 - KK.key.length))}`);
+  write(`<span class="dim">${KK.label}</span>`);
 
   write(`axes      m=${M}  n=${N}  k=${K}   <span class="dim">n is one ${man.tile?.bn ?? 64}-wide block</span>`);
   write(`derived   workgroup ${man.workgroup.join("x")}  fragment ${man.fragment.join("x")}  ` +
@@ -61,17 +76,17 @@ async function main() {
 
   const BATCH = 8;
   const built = await makeRunner(ctx, { source: src, manifest: man, inputs: [a, b],
-                                        label: "fused", batch: BATCH });
+                                        label: KK.key, batch: BATCH });
   for (const m of built.messages) write(`<span class="warn">${m.type}</span> ${m.message}`);
   const runners = [built.runner];
   let tg = null;
   if (TYPEGPU.available) {
     tg = (await makeRunner(ctx, { runtime: "typegpu", source: src, manifest: man,
-                                  inputs: [a, b], label: "fused:tg", batch: BATCH })).runner;
+                                  inputs: [a, b], label: `${KK.key}:tg`, batch: BATCH })).runner;
     runners.push(tg);
   }
-  const stats = await measureInterleaved(runners, { warmup: 6, reps: 15 });
-  const st = stats.get("fused");
+  const stats = await measureInterleaved(runners, { warmup: 4, reps: 10 });
+  const st = stats.get(KK.key);
   if (st) {
     write(`gpu       min ${f(st.minQ, 2)}q  med ${f(st.medianQ, 2)}q  spread ${f(st.spreadQ, 2)}q` +
           `   <span class="dim">(x${st.batch} per timed pass)</span>`);
