@@ -302,22 +302,57 @@ export declare function rowFill<BM extends number, D extends DType, N extends Pa
  * gives a kernel that is right whenever the row holds a positive value and
  * silently wrong when every value is negative — in the ragged tail only.
  */
+/**
+ * The row maximum of a COMPUTED fragment.
+ *
+ * Where the tile overload asks for `"exact" | "negInf"`, this one cannot: a
+ * fragment has no pad state to carry. `mma` requires its operands to be
+ * `"exact" | "zero"` so that a masked lane annihilates, which means a fragment's
+ * out-of-range lanes hold ZERO — the identity for a sum and the wrong one for a
+ * max, exactly the bug `.pad(negInf)` exists to prevent.
+ *
+ * Whether that matters depends on whether the reduced axis is ragged at all,
+ * which is a property of the AXIS rather than of the fragment, and lives in the
+ * spec rather than in the value. So the check is the compiler pass's, not the
+ * type's: reducing a fragment along a ragged axis with `rowMax` is refused there,
+ * by name. Same split as everywhere else — the types catch what types can, and
+ * the pass reports what needs the axis table.
+ */
+export declare function rowMax<BM extends number, BN extends number, D extends DType>(
+  frag: Frag<readonly [BM, BN], D>,
+  acc: RowVec<NoInfer<BM>, NoInfer<D>>,
+): RowVec<BM, D>;
 export declare function rowMax<BM extends number, BN extends number, D extends DType>(
   block: Tile<readonly [BM, BN], D, "exact" | "negInf">,
   acc: RowVec<NoInfer<BM>, NoInfer<D>>,
 ): RowVec<BM, D>;
 
 /** Reduce a block into the per-row sum. Takes the additive identity. */
+/** A fragment's out-of-range lanes are zero, which is the identity a sum wants, so this needs no guard. */
+export declare function rowSum<BM extends number, BN extends number, D extends DType>(
+  frag: Frag<readonly [BM, BN], D>,
+  acc: RowVec<NoInfer<BM>, NoInfer<D>>,
+): RowVec<BM, D>;
 export declare function rowSum<BM extends number, BN extends number, D extends DType>(
   block: Tile<readonly [BM, BN], D, "exact" | "zero">,
   acc: RowVec<NoInfer<BM>, NoInfer<D>>,
 ): RowVec<BM, D>;
 
 /** Elementwise, broadcasting the row accumulator across the block's columns. */
+/** Scaling a computed fragment by a row vector. */
+export declare function subRow<BM extends number, BN extends number, D extends DType>(
+  frag: Frag<readonly [BM, BN], D>,
+  row: RowVec<NoInfer<BM>, NoInfer<D>>,
+): Frag<readonly [BM, BN], D>;
 export declare function subRow<BM extends number, BN extends number, D extends DType, P extends PadState>(
   block: Tile<readonly [BM, BN], D, P>, row: RowVec<NoInfer<BM>, NoInfer<D>>,
 ): Tile<readonly [BM, BN], D, P>;
 
+/** Dividing a computed fragment by a row vector. */
+export declare function divRow<BM extends number, BN extends number, D extends DType>(
+  frag: Frag<readonly [BM, BN], D>,
+  row: RowVec<NoInfer<BM>, NoInfer<D>>,
+): Frag<readonly [BM, BN], D>;
 export declare function divRow<BM extends number, BN extends number, D extends DType, P extends PadState>(
   block: Tile<readonly [BM, BN], D, P>, row: RowVec<NoInfer<BM>, NoInfer<D>>,
 ): Tile<readonly [BM, BN], D, P>;
@@ -333,6 +368,10 @@ export declare function divRow<BM extends number, BN extends number, D extends D
  *
  * Non-recursive, depth 1: the surface's rule about conditional types holds.
  */
+/** `exp` of a computed fragment, elementwise. */
+export declare function expTile<BM extends number, BN extends number, D extends DType>(
+  frag: Frag<readonly [BM, BN], D>,
+): Frag<readonly [BM, BN], D>;
 export declare function expTile<BM extends number, BN extends number, D extends DType, P extends PadState>(
   block: Tile<readonly [BM, BN], D, P>,
 ): Tile<readonly [BM, BN], D, P extends "negInf" ? "zero" : P>;
@@ -357,6 +396,11 @@ export declare function rstdRow<BM extends number, D extends DType>(
   sumSq: RowVec<BM, D>, mean: RowVec<NoInfer<BM>, NoInfer<D>>, eps: number,
 ): RowVec<BM, D>;
 
+/** Multiplying a computed fragment by a row vector. */
+export declare function mulRow<BM extends number, BN extends number, D extends DType>(
+  frag: Frag<readonly [BM, BN], D>,
+  row: RowVec<NoInfer<BM>, NoInfer<D>>,
+): Frag<readonly [BM, BN], D>;
 export declare function mulRow<BM extends number, BN extends number, D extends DType, P extends PadState>(
   block: Tile<readonly [BM, BN], D, P>, row: RowVec<NoInfer<BM>, NoInfer<D>>,
 ): Tile<readonly [BM, BN], D, P>;
