@@ -69,7 +69,17 @@ export type Update =
   | { readonly k: "foldFrag"; readonly acc: string; readonly op: "max" | "sum";
       readonly value: FragExpr }
   /** Outer-product two operand slices into a 2-D fragment. */
-  | { readonly k: "mma"; readonly acc: string; readonly a: Expr; readonly b: Expr };
+  | { readonly k: "mma"; readonly acc: string; readonly a: Expr; readonly b: Expr }
+  /**
+   * A contraction whose first operand is a fragment the body already computed.
+   *
+   * Attention's `O = P·V`. The fragment is laid out by the contraction that built
+   * it, and this one sums along one of THAT contraction's accumulate axes, so
+   * each invocation holds only its own slice of what is being summed. Which is
+   * why the emitter has to stage it rather than read it in place.
+   */
+  | { readonly k: "mmaFrag"; readonly acc: string;
+      readonly a: FragExpr; readonly b: Expr };
 
 /** A fragment-valued expression: an accumulator, or an elementwise map of one. */
 export type FragExpr =
@@ -434,9 +444,13 @@ export function parseBody(
         }
         if (fn === "mma") {
           updates.push({
-            k: "mma", acc: lhs.text,
-            a: parseExpr(rhs.arguments[0], rowNames, bindings, padNames),
-            b: parseExpr(rhs.arguments[1], rowNames, bindings, padNames),
+            ...(bottomsOutAtFrag(rhs.arguments[0], fragNames)
+              ? { k: "mmaFrag" as const, acc: lhs.text,
+                  a: parseFrag(rhs.arguments[0], rowNames),
+                  b: parseExpr(rhs.arguments[1], rowNames, bindings, padNames) }
+              : { k: "mma" as const, acc: lhs.text,
+                  a: parseExpr(rhs.arguments[0], rowNames, bindings, padNames),
+                  b: parseExpr(rhs.arguments[1], rowNames, bindings, padNames) }),
           });
         } else {
           updates.push(bottomsOutAtFrag(rhs.arguments[0], fragNames)

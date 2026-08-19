@@ -270,6 +270,28 @@ export declare function zeros<BM extends number, BN extends number, D extends DT
  * `Tile<..., 0>` on both operands: a non-annihilating pad would leak into the
  * reduction at a ragged edge, which is a numerics bug that only shows on edges.
  */
+/**
+ * A contraction whose first operand is a COMPUTED fragment.
+ *
+ * Attention's second half: `O = P·V`, where `P` came out of the first contraction
+ * and a softmax rather than out of memory. No `.pad()` and no identity, because a
+ * fragment has no masked lanes to fill — whatever raggedness there was is already
+ * in the values, put there by the padded reads that built it.
+ *
+ * The emitter has to work harder for this than the tile form. `P` is laid out
+ * with the first contraction's accumulate axes on the lanes, and the second
+ * contracts along one of them, so each invocation holds only its own slice of the
+ * axis being summed. The fragment must be redistributed — which in practice means
+ * staged through workgroup memory, exactly like an operand read from a buffer,
+ * with registers rather than global memory as the source.
+ */
+export declare function mma<
+  BM extends number, BK extends number, BN extends number, D extends DType,
+>(
+  a: Frag<readonly [BM, BK], D>,
+  b: Tile<readonly [NoInfer<BK>, BN], NoInfer<D>, "exact" | "zero">,
+  acc: Frag<readonly [NoInfer<BM>, BN], NoInfer<D>>,
+): Frag<readonly [BM, BN], D>;
 export declare function mma<
   BM extends number, BK extends number, BN extends number, D extends DType,
 >(

@@ -797,6 +797,44 @@ invisible.
 
 Again byte-identical: all six existing kernels unchanged.
 
+### The redistribution, measured before implementing it
+
+`mma` now takes a computed fragment as its first operand, and the parser reads it,
+so `spike/attention/attention.kernel.ts` type-checks and parses end to end. The
+emitter refuses one thing, by name:
+
+```
+contracting a fragment along an axis it holds on a lane
+```
+
+`P` comes out of `S = Q·Kᵀ` laid out with `n` on the x lane — four of the
+sixty-four `n` values per invocation — and `O = P·V` sums along `n`. Read in
+place, each invocation would sum a quarter of its row.
+
+The mechanism is not the hard part: **stage the fragment through workgroup memory,
+exactly as an operand read from a buffer is staged, with registers as the source.**
+The budget is:
+
+```
+                     q       k       v       P (staged)     total
+bm=64 bn=64 bd=16    4096  + 4096  + 4096  + 16384      =  28672 B   OVER
+bm=64 bn=32 bd=16    4096  + 2048  + 2048  +  8192      =  16384 B   exactly at it
+bm=32 bn=32 bd=16    2048  + 2048  + 2048  +  4096      =  10240 B   ok
+```
+
+Against the 16384 B floor every WebGPU implementation guarantees. **Attention is
+not expressible at this project's usual 64×64×16 tile at all** — not because of
+anything in the emitter, but because the staged fragment is `bm × bn` and that is
+the whole budget on its own. It needs 32×32×16.
+
+Knowing that before implementing is the point of computing it first: the
+alternative was to build the staging and then discover the kernel cannot be
+dispatched.
+
+The emitter now also **refuses a kernel over the floor** rather than reporting the
+number and emitting it. The harness had always checked at run time; a kernel that
+cannot be dispatched anywhere should not compile.
+
 ### G4 is what is left
 
 Composing two contractions where the second **consumes the first's fragment**.
